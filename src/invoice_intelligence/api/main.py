@@ -19,6 +19,10 @@ from invoice_intelligence.api.routes.reviews import router as reviews_router
 from invoice_intelligence.api.routes.runs import router as runs_router
 from invoice_intelligence.api.routes.training import router as training_router
 from invoice_intelligence.api.routes.transactions import router as transactions_router
+from invoice_intelligence.api.routes.code_harness import router as code_harness_router
+from invoice_intelligence.api.routes.code_harness_postmortems import (
+    router as code_harness_postmortems_router,
+)
 from invoice_intelligence.api.security import enforce_request_security
 from invoice_intelligence.application.ports.observability import TraceStage
 from invoice_intelligence.domain.governance import TrustedTenantContext
@@ -100,4 +104,6 @@ def create_app(
     app.include_router(promotion_router, prefix=settings.api_prefix)
     app.include_router(training_router, prefix=settings.api_prefix)
     app.include_router(evaluations_router, prefix=settings.api_prefix)
+    app.include_router(code_harness_router, prefix=settings.api_prefix)
+    app.include_router(code_harness_postmortems_router, prefix=settings.api_prefix)
     return app

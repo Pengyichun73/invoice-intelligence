@@ -17,6 +17,12 @@ const statusLabels = {
   retryable: '可重试', failed_retryable: '等待重试', memory_pending: '记忆待处理',
   running: '运行中', overall: '总体', ready_to_activate: '未激活·待校验',
   index_active: '已激活',
+  unavailable: '不可用',
+  no_data: '未读取',
+  quarantined: '已隔离',
+  failed_retryable: '等待重试',
+  consistent: '结果一致',
+  invalid: '无效',
 }
 </script>
 

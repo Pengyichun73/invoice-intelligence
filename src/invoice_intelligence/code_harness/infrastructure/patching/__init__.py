@@ -1,0 +1,2 @@
+"""Deterministic structured patching adapters."""
+

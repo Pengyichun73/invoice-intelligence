@@ -22,6 +22,7 @@ from invoice_intelligence.application.errors import (
     WorkflowIdentityError,
     WorkflowPersistenceError,
 )
+from invoice_intelligence.code_harness.domain.errors import HarnessError, HarnessErrorCode
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -44,6 +45,7 @@ def install_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(WorkflowPersistenceError, _internal)
     app.add_exception_handler(StorageError, _internal)
     app.add_exception_handler(Exception, _internal)
+    app.add_exception_handler(HarnessError, _harness_error)
 
 
 async def _bad_request(_: Request, error: Exception) -> JSONResponse:
@@ -107,6 +109,28 @@ async def _internal(request: Request, error: Exception) -> JSONResponse:
         },
     )
     return _response(500, "internal_server_error", "Internal server error")
+
+
+async def _harness_error(_: Request, error: Exception) -> JSONResponse:
+    if not isinstance(error, HarnessError):
+        return _response(500, "internal_server_error", "Internal server error")
+    status = 500
+    if error.code is HarnessErrorCode.TASK_NOT_FOUND:
+        status = 404
+    elif error.code in {
+        HarnessErrorCode.REVISION_CONFLICT,
+        HarnessErrorCode.LEASE_FENCING_REJECTED,
+        HarnessErrorCode.IDEMPOTENCY_CONFLICT,
+    }:
+        status = 409
+    elif error.code in {
+        HarnessErrorCode.PARSER_NOT_CONFIGURED,
+        HarnessErrorCode.INDEX_PROVIDER_NOT_CONFIGURED,
+        HarnessErrorCode.MODEL_PROVIDER_NOT_CONFIGURED,
+        HarnessErrorCode.SANDBOX_NOT_CONFIGURED,
+    }:
+        status = 503
+    return _response(status, error.code.value, error.code.value)
 
 
 def _response(status_code: int, code: str, message: str) -> JSONResponse:

@@ -5,6 +5,7 @@ explicit API operations and are never performed by this process.
 """
 
 import asyncio
+import logging
 import signal
 from datetime import UTC, datetime
 from types import FrameType
@@ -13,6 +14,8 @@ from invoice_intelligence.bootstrap import build_container, close_application_co
 from invoice_intelligence.config.logging import configure_logging
 from invoice_intelligence.config.settings import get_settings
 from invoice_intelligence.infrastructure.observability.metrics import get_metrics_registry
+
+logger = logging.getLogger(__name__)
 
 
 def _install_stop_handlers(event: asyncio.Event) -> None:
@@ -47,7 +50,20 @@ async def _process_tenant(
             )
             processed += result.indexed + result.failed
             if verify:
-                await example_service.verify_index_version(tenant_id, version)
+                verified = await example_service.verify_index_version(tenant_id, version)
+                if not verified:
+                    get_metrics_registry().record_worker(
+                        worker="index_projection",
+                        outcome="verification_failed",
+                    )
+                    logger.warning(
+                        "Reviewed-example index verification failed",
+                        extra={
+                            "tenant_id": tenant_id,
+                            "index_version": version.value,
+                            "projection_status": "blocked",
+                        },
+                    )
     if mode in {"field_semantics", "both"} and field_service is not None:
         for version in await field_service.list_index_versions(tenant_id):
             await field_service.requeue_stale(tenant_id, version, stale_before)
@@ -62,7 +78,20 @@ async def _process_tenant(
             )
             processed += result.indexed + result.failed
             if verify:
-                await field_service.verify_index_version(tenant_id, version)
+                verified = await field_service.verify_index_version(tenant_id, version)
+                if not verified:
+                    get_metrics_registry().record_worker(
+                        worker="field_semantic_projection",
+                        outcome="verification_failed",
+                    )
+                    logger.warning(
+                        "Field-semantic index verification failed",
+                        extra={
+                            "tenant_id": tenant_id,
+                            "index_version": version.value,
+                            "projection_status": "blocked",
+                        },
+                    )
     return processed
 
 

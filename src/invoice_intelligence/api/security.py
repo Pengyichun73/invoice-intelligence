@@ -58,6 +58,23 @@ _RULES: tuple[tuple[str, re.Pattern[str], Permission], ...] = (
     ),
     ("POST", re.compile(r"^/training/jobs$"), Permission.TRAINING_SUBMIT),
     ("GET", re.compile(r"^/training/jobs/[^/]+$"), Permission.TRAINING_SUBMIT),
+    ("GET", re.compile(r"^/code-harness/tasks/[^/]+$"), Permission.CODE_HARNESS_READ),
+    ("POST", re.compile(r"^/code-harness/tasks$"), Permission.CODE_HARNESS_EXECUTE),
+    (
+        "POST",
+        re.compile(r"^/code-harness/tasks/[^/]+/resume$"),
+        Permission.CODE_HARNESS_EXECUTE,
+    ),
+    (
+        "GET",
+        re.compile(r"^/code-harness/postmortems/[^/]+$"),
+        Permission.CODE_HARNESS_READ,
+    ),
+    (
+        "POST",
+        re.compile(r"^/code-harness/postmortems/[^/]+/admission$"),
+        Permission.CODE_HARNESS_GOVERN,
+    ),
     ("GET", re.compile(r"^/evaluations/(?:snapshots/[^/]+|jobs(?:/[^/]+)?|schedules)$"), Permission.EVALUATION_RUN),
     ("POST", re.compile(r"^/evaluations/(?:snapshots|jobs|suite-jobs|schedules|schedules/[^/]+/disable)$"), Permission.EVALUATION_RUN),
     (

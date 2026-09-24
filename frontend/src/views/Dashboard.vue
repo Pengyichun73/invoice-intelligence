@@ -26,6 +26,8 @@ const state = reactive({
   examplesMore: false,
   conflicts: null,
   conflictsMore: false,
+  completed: null,
+  completedMore: false,
   ocr: null,
   refreshedAt: null,
 })
@@ -38,7 +40,7 @@ const today = new Intl.DateTimeFormat('zh-CN', {
 }).format(new Date())
 
 const pendingTotal = computed(() => {
-  const values = [state.admissions.pending, state.admissions.quarantined, state.conflicts]
+  const values = [state.admissions.pending, state.admissions.quarantined]
   return values.some((value) => value === null)
     ? null
     : values.reduce((total, value) => total + value, 0)
@@ -51,7 +53,7 @@ const governanceUnknown = computed(() => (
 
 const readiness = computed(() => {
   if (!state.online) return { label: '服务未连接', tone: 'offline', detail: '上传和治理操作暂不可用' }
-  if ([state.admissions.pending, state.admissions.quarantined, state.examples, state.conflicts].some((item) => item === null)) {
+  if ([state.admissions.pending, state.admissions.quarantined, state.examples, state.conflicts, state.completed].some((item) => item === null)) {
     return { label: '部分数据未读取', tone: 'attention', detail: '不会以 0 代替缺失状态' }
   }
   if (pendingTotal.value) return { label: '有待处理事项', tone: 'attention', detail: '建议先处理字段冲突' }
@@ -108,27 +110,39 @@ function shown(value, more = false) {
   return value === null ? '未读取' : String(value) + (more ? '+' : '')
 }
 
+function todayRange() {
+  const start = new Date()
+  start.setHours(0, 0, 0, 0)
+  const end = new Date(start)
+  end.setDate(end.getDate() + 1)
+  return { started_at: start.toISOString(), ended_at: end.toISOString() }
+}
+
 async function load() {
   state.loading = true
   state.error = ''
+  const range = todayRange()
   const results = await Promise.allSettled([
     invoiceApi.health(),
     governanceApi.admissions({ status: 'pending', limit: 100 }),
     governanceApi.admissions({ status: 'quarantined', limit: 100 }),
     governanceApi.examples({ is_valid: true, limit: 100 }),
     governanceApi.conflicts({ status: 'open', limit: 100 }),
+    governanceApi.audits({ ...range, limit: 100 }),
     governanceApi.ocrMetrics(),
   ])
-  const [health, pending, quarantined, examples, conflicts, ocr] = results
+  const [health, pending, quarantined, examples, conflicts, completed, ocr] = results
   state.online = health.status === 'fulfilled'
   state.admissions.pending = pending.status === 'fulfilled' ? count(pending.value) : null
   state.admissions.quarantined = quarantined.status === 'fulfilled' ? count(quarantined.value) : null
   state.examples = examples.status === 'fulfilled' ? count(examples.value) : null
   state.conflicts = conflicts.status === 'fulfilled' ? count(conflicts.value) : null
+  state.completed = completed.status === 'fulfilled' ? count(completed.value) : null
   state.admissions.pendingMore = pending.status === 'fulfilled' && Boolean(pending.value?.next_cursor)
   state.admissions.quarantinedMore = quarantined.status === 'fulfilled' && Boolean(quarantined.value?.next_cursor)
   state.examplesMore = examples.status === 'fulfilled' && Boolean(examples.value?.next_cursor)
   state.conflictsMore = conflicts.status === 'fulfilled' && Boolean(conflicts.value?.next_cursor)
+  state.completedMore = completed.status === 'fulfilled' && Boolean(completed.value?.next_cursor)
   state.ocr = ocr.status === 'fulfilled' ? ocr.value : null
   if (!state.online) state.error = '后端暂时不可用，上传和治理操作需等待连接恢复。'
   else if (results.slice(1).some((item) => item.status === 'rejected')) {
@@ -167,25 +181,25 @@ onMounted(load)
 
     <section class="task-metrics" aria-label="工作概览">
       <button class="task-metric attention" @click="go('admissions')">
-        <span>待人工处理</span>
+        <span>待处理</span>
         <strong>{{ shown(pendingTotal) }}</strong>
-        <small>准入、隔离与字段冲突</small>
+        <small>待准入与已隔离案例</small>
+      </button>
+      <button class="task-metric" @click="go('audits')">
+        <span>今日完成</span>
+        <strong>{{ shown(state.completed, state.completedMore) }}</strong>
+        <small>今日已记录的治理动作</small>
       </button>
       <button class="task-metric" @click="go('examples')">
-        <span>可信案例</span>
+        <span>有效案例</span>
         <strong>{{ shown(state.examples, state.examplesMore) }}</strong>
         <small>已审核、已批准且有效</small>
       </button>
-      <button class="task-metric" @click="go('indexes')">
-        <span>多源识别</span>
-        <strong :class="'tone-' + ocrSummary.tone">{{ ocrSummary.label }}</strong>
-        <small>{{ ocrSummary.detail }}</small>
+      <button class="task-metric attention" @click="go('conflicts')">
+        <span>开放冲突</span>
+        <strong>{{ shown(state.conflicts, state.conflictsMore) }}</strong>
+        <small>字段语义与证据绑定冲突</small>
       </button>
-      <article class="task-metric">
-        <span>系统状态</span>
-        <strong class="metric-state"><i class="status-dot" :class="readiness.tone" />{{ readiness.label }}</strong>
-        <small>{{ readiness.detail }}</small>
-      </article>
     </section>
 
     <section class="dashboard-workspace">

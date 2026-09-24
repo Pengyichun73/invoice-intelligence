@@ -263,7 +263,15 @@ onBeforeUnmount(() => { stopped = true })
         </button>
         <div class="button-row"><button v-if="state.file" class="secondary-btn" @click="clearFile"><X :size="16" />移除</button><button class="primary-btn grow" :disabled="!state.file || state.loading" @click="start"><LoaderCircle v-if="state.loading" class="spin" :size="16" /><Play v-else :size="16" />开始提取</button></div>
         <div class="lookup"><label>按 run_id 查询<input v-model="runQuery" placeholder="run_..." @keyup.enter="loadRun" /></label><button class="icon-btn" title="查询运行" :disabled="state.loading" @click="loadRun"><Search :size="17" /></button></div>
-        <dl v-if="state.run" class="meta-list"><div><dt>运行编号</dt><dd>{{ state.run.run_id }}</dd></div><div><dt>处理状态</dt><dd><StatusBadge :value="state.run.status" /></dd></div><div><dt>校验结果</dt><dd><StatusBadge v-if="state.run.validation_route" :value="state.run.validation_route" /><span v-else>未报告</span></dd></div><div><dt>记忆状态</dt><dd><StatusBadge v-if="state.run.memory_status" :value="state.run.memory_status" /><span v-else>未创建</span></dd></div><div v-if="state.run.memory_error_code"><dt>恢复错误码</dt><dd>{{ state.run.memory_error_code }}</dd></div></dl>
+        <dl v-if="state.run" class="meta-list"><div><dt>处理状态</dt><dd><StatusBadge :value="state.run.status" /></dd></div><div><dt>校验结果</dt><dd><StatusBadge v-if="state.run.validation_route" :value="state.run.validation_route" /><span v-else>未报告</span></dd></div><div><dt>记忆状态</dt><dd><StatusBadge v-if="state.run.memory_status" :value="state.run.memory_status" /><span v-else>未创建</span></dd></div></dl>
+        <details v-if="state.run" class="technical-details">
+          <summary>查看运行与恢复详情</summary>
+          <dl class="meta-list">
+            <div><dt>运行编号</dt><dd>{{ state.run.run_id }}</dd></div>
+            <div v-if="state.run.memory_error_code"><dt>恢复错误码</dt><dd>{{ state.run.memory_error_code }}</dd></div>
+            <div><dt>技术状态</dt><dd>{{ state.run.status || '未报告' }}</dd></div>
+          </dl>
+        </details>
       </section>
 
       <section class="surface result-surface">
@@ -307,6 +315,19 @@ onBeforeUnmount(() => { stopped = true })
           <div class="field-grid"><div v-for="field in fieldPresence" :key="field.path" class="field-value-row"><code>{{ field.path }}</code><strong>{{ fullText(field.value) }}</strong><StatusBadge :value="field.present ? 'completed' : 'unresolved'" /></div></div>
           <h3 class="subheading">字段证据</h3>
           <div class="record-list"><article v-for="item in evidence" :key="item.field_path"><header><code>{{ item.field_path }}</code><span>{{ displayLabel(item.source, 'evidence_source') }} · 第 {{ item.page_number || '-' }} 页</span></header><p>{{ localizedText((item.validation_signals || []).join(' · ') || '无额外验证信号') }}</p><footer>候选 {{ item.candidate_values?.length || 0 }} 个 · 可读性 {{ item.readability || '未记录' }}</footer></article></div>
+          <details class="technical-details" v-if="fieldBindingEvidence.length || ocrComparisons.length">
+            <summary>查看字段绑定与多源技术证据</summary>
+            <div class="record-list">
+              <article v-for="item in fieldBindingEvidence" :key="`binding-${item.evidence_id}`">
+                <header><code>{{ item.canonical_field_path || item.observed_label }}</code><StatusBadge :value="item.binding_decision?.status || 'not_reported'" /></header>
+                <p>{{ fullText(item.observed_label) }} → {{ fullText(item.normalized_label) }}</p>
+              </article>
+              <article v-for="item in ocrComparisons" :key="`ocr-${item.canonical_field_path}`">
+                <header><code>{{ item.canonical_field_path }}</code><StatusBadge :value="item.outcome || 'not_reported'" /></header>
+                <p>{{ localizedText(item.reason_codes?.join(' · ') || '未报告原因') }}</p>
+              </article>
+            </div>
+          </details>
         </template>
 
         <div v-if="isReview" class="review-zone">

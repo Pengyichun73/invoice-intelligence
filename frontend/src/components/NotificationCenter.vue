@@ -17,8 +17,12 @@ function runAction(item) {
       <article
         v-for="item in notifications"
         :key="item.id"
+        v-motion
         class="notification-item"
         :class="item.type"
+        :initial="{ opacity: 0, x: 18 }"
+        :enter="{ opacity: 1, x: 0, transition: { type: 'spring', stiffness: 250, damping: 25 } }"
+        :leave="{ opacity: 0, x: 18, transition: { duration: 0.16 } }"
         :role="item.type === 'error' ? 'alert' : 'status'"
         :aria-live="item.type === 'error' ? 'assertive' : 'polite'"
       >
@@ -26,6 +30,7 @@ function runAction(item) {
         <div>
           <strong>{{ item.title }}</strong>
           <p>{{ item.message }}</p>
+          <small v-if="item.traceId">技术关联标识：{{ item.traceId }}</small>
           <button v-if="item.actionLabel" class="notification-action" @click="runAction(item)">
             {{ item.actionLabel }}<ArrowRight :size="15" />
           </button>
@@ -37,4 +42,3 @@ function runAction(item) {
     </TransitionGroup>
   </aside>
 </template>
-

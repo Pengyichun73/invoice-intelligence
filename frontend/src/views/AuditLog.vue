@@ -61,7 +61,9 @@ onMounted(refresh)
       <button class="secondary-btn" :disabled="pager.state.loading" @click="refresh"><RefreshCw :size="16" />刷新</button>
     </PageHeader>
     <div class="alert neutral"><span>技术关联标识仅用于请求与日志关联，不是业务编号。历史记录未采集的版本和关联标识保持为空。</span></div>
-    <section class="toolbar audit-filters">
+    <details class="technical-details audit-filter-details">
+      <summary>高级筛选</summary>
+      <section class="toolbar audit-filters">
       <label>操作<select v-model="operation" @change="refresh"><option value="">全部操作</option><option v-for="item in operations" :key="item" :value="item">{{ displayLabel(item, 'operation') }}</option></select></label>
       <label>资源类型<select v-model="resourceType" @change="refresh"><option value="">全部资源</option><option v-for="item in resourceTypes" :key="item" :value="item">{{ displayLabel(item, 'resource_type') }}</option></select></label>
       <label>资源 ID<input v-model="resourceId" maxlength="256" placeholder="精确匹配" @keyup.enter="refresh" /></label>
@@ -69,23 +71,30 @@ onMounted(refresh)
       <label>开始时间<input v-model="startedAt" type="datetime-local" @change="refresh" /></label>
       <label>结束时间<input v-model="endedAt" type="datetime-local" @change="refresh" /></label>
       <button class="secondary-btn" :disabled="pager.state.loading" @click="refresh">应用筛选</button>
-    </section>
+      </section>
+    </details>
     <section class="surface">
       <ResourceState :loading="pager.state.loading" :error="pager.state.error" :empty="!pager.state.items.length" empty-text="暂无治理审计记录" @retry="refresh">
         <div class="table-wrap">
           <table>
-            <thead><tr><th>时间</th><th>操作</th><th>操作人</th><th>资源</th><th>原因</th><th>资源版本</th><th>技术关联标识</th></tr></thead>
+            <thead><tr><th>时间</th><th>操作</th><th>操作人</th><th>资源</th><th>结果与风险</th><th>详情</th></tr></thead>
             <tbody>
               <tr v-for="item in pager.state.items" :key="item.audit_id">
                 <td>{{ formatDate(item.timestamp) }}</td>
                 <td>{{ displayLabel(item.operation, 'operation') }}</td>
                 <td>{{ item.actor }}</td>
                 <td><span>{{ displayLabel(item.resource_type, 'resource_type') }}</span><small>{{ item.resource_id }}</small></td>
-                <td>{{ item.reason }}</td>
-                <td>{{ item.resource_version || '历史记录未采集' }}</td>
                 <td>
-                  <span v-if="!item.trace_id">历史记录未采集</span>
-                  <span v-else class="trace-value"><code>{{ item.trace_id }}</code><button class="icon-btn" title="复制 Trace ID" @click="copyTrace(item.trace_id)"><Check v-if="copiedTrace === item.trace_id" :size="14" /><Copy v-else :size="14" /></button></span>
+                  <span>{{ item.reason || '已记录治理操作' }}</span>
+                  <small>{{ item.resource_version ? `版本 ${item.resource_version}` : '历史版本未采集' }}</small>
+                </td>
+                <td>
+                  <details class="row-details">
+                    <summary>查看技术详情</summary>
+                    <div>{{ item.reason || '未提供原因' }}</div>
+                    <span v-if="!item.trace_id">历史记录未采集 Trace</span>
+                    <span v-else class="trace-value"><code>{{ item.trace_id }}</code><button class="icon-btn" title="复制 Trace ID" @click="copyTrace(item.trace_id)"><Check v-if="copiedTrace === item.trace_id" :size="14" /><Copy v-else :size="14" /></button></span>
+                  </details>
                 </td>
               </tr>
             </tbody>

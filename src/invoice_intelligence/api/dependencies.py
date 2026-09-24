@@ -29,6 +29,10 @@ from invoice_intelligence.application.services.training_jobs import TrainingJobS
 from invoice_intelligence.application.services.transaction_analysis import (
     TransactionAnalysisService,
 )
+from invoice_intelligence.code_harness.application.services.code_harness import CodeHarnessService
+from invoice_intelligence.code_harness.application.services.postmortem_governance import (
+    PostmortemGovernanceService,
+)
 from invoice_intelligence.domain.governance import TrustedTenantContext
 
 
@@ -80,6 +84,8 @@ class ApiDependencies:
     promotion_candidate_service: PromotionCandidateService | None = None
     training_job_service: TrainingJobService | None = None
     evaluation_job_service: EvaluationJobService | None = None
+    code_harness_service: CodeHarnessService | None = None
+    code_harness_postmortem_service: PostmortemGovernanceService | None = None
 
 
 def get_api_dependencies(request: Request) -> ApiDependencies:
@@ -142,6 +148,22 @@ def get_evaluation_job_service(
     return dependencies.evaluation_job_service
 
 
+def get_code_harness_service(
+    dependencies: ApiDependencyBundle,
+) -> CodeHarnessService:
+    if dependencies.code_harness_service is None:
+        raise RuntimeError("Code Harness service is not initialized")
+    return dependencies.code_harness_service
+
+
+def get_code_harness_postmortem_service(
+    dependencies: ApiDependencyBundle,
+) -> PostmortemGovernanceService:
+    if dependencies.code_harness_postmortem_service is None:
+        raise RuntimeError("Code Harness postmortem service is not initialized")
+    return dependencies.code_harness_postmortem_service
+
+
 def get_accounting_service(dependencies: ApiDependencyBundle) -> AccountingService:
     return dependencies.accounting_service
 
@@ -196,6 +218,14 @@ TrainingJobServiceDependency = Annotated[
 EvaluationJobServiceDependency = Annotated[
     EvaluationJobService,
     Depends(get_evaluation_job_service),
+]
+CodeHarnessServiceDependency = Annotated[
+    CodeHarnessService,
+    Depends(get_code_harness_service),
+]
+CodeHarnessPostmortemServiceDependency = Annotated[
+    PostmortemGovernanceService,
+    Depends(get_code_harness_postmortem_service),
 ]
 AccountingServiceDependency = Annotated[
     AccountingService,

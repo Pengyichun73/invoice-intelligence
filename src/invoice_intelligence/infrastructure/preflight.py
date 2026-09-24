@@ -1,6 +1,7 @@
 """Production preflight checks with safe, low-cardinality diagnostics."""
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -20,6 +21,8 @@ def run_preflight(settings: Any, *, worker_id: str | None = None) -> PreflightRe
     production = getattr(getattr(settings, "environment", None), "value", None) == "production"
 
     if production:
+        checks["business_database_password_file"] = _password_file_check(settings)
+        checks["business_database"] = _business_database_check(settings)
         checks["auth"] = (
             "ok"
             if getattr(settings, "auth_mode", None) == "oidc"
@@ -59,3 +62,40 @@ def run_preflight(settings: Any, *, worker_id: str | None = None) -> PreflightRe
         ready=all(value in {"ok", "development_or_staging"} for value in checks.values()),
         checks=checks,
     )
+
+
+def _password_file_check(settings: Any) -> str:
+    """Verify the production secret path without exposing its path or contents."""
+
+    value = getattr(settings, "business_database_password_file", None)
+    if not isinstance(value, Path) or not value.is_absolute() or not value.is_file():
+        return "absolute_readable_password_file_required"
+    try:
+        with value.open("r", encoding="utf-8") as source:
+            content = source.read()
+    except (OSError, UnicodeError):
+        return "absolute_readable_password_file_required"
+    if not content.strip() or any(character in content for character in "\x00\r\n"):
+        return "absolute_readable_password_file_required"
+    return "ok"
+
+
+def _business_database_check(settings: Any) -> str:
+    """Confirm the resolved production DSN uses the supported PostgreSQL driver."""
+
+    try:
+        resolved = getattr(settings, "resolved_business_database_url")
+        dsn = (
+            resolved.get_secret_value()
+            if hasattr(resolved, "get_secret_value")
+            else str(resolved)
+        )
+    except (AttributeError, OSError, ValueError, TypeError):
+        return "postgresql_password_file_dsn_required"
+    parsed = urlsplit(dsn)
+    if (
+        parsed.scheme != "postgresql+psycopg"
+        or not parsed.hostname
+    ):
+        return "postgresql_password_file_dsn_required"
+    return "ok"

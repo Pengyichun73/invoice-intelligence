@@ -1,5 +1,39 @@
 # Architecture
 
+## Code Generation and Self-Healing Harness
+
+Harness 采用独立的确定性 Application 状态机，不新增 LangGraph、Agent Graph 或开放式 Agent Loop，
+也不改变现有发票识别 Workflow 和 `InvoiceExtraction` Schema。固定阶段为：
+
+```text
+prepare_task -> inspect_repository -> retrieve_code_context -> generate_patch
+-> validate_patch -> execute_in_sandbox -> evaluate_result -> repair_or_finish
+```
+
+Repository Snapshot、Patch、Execution、Watchdog、Postmortem 和审计事实由 PostgreSQL 保存；代码 CAST
+和向量索引是绑定 `repository_id`、`snapshot_id`、`revision` 的脱敏可重建派生数据。Parser、Code Model、
+Embedding/Reranker、Code Index 和 Sandbox 均只能通过 Application Port 接入。
+
+当前 Harness 已完成 Domain/Port 契约、版本绑定、固定 Runner、Snapshot/结构化 Patch 校验、Python
+AST/结构化参数与本地精确检索适配器、PostgreSQL 首版事实迁移与 Task/Postmortem/Repository Source Registry
+Repository、Snapshot/Patch/Execution/Watchdog 事实写入、Task claim/lease fencing、通用 Harness
+Worker、API/Composition Root 装配、共享隐私 Trace/低敏 Metrics
+Adapter，以及默认拒绝 Sandbox 边界；尚未完成 Source Registry 注册/更新治理 API、运行时 reload、
+真实 Tree-sitter/CST 多语言 Adapter、代码模型、代码 Milvus 或 MicroVM。首版迁移和 Repository
+尚未在真实 PostgreSQL 上执行验收。缺少这些能力时
+必须返回稳定受限状态并 fail closed，不得执行生成代码或伪造检索结果。详细边界见
+`docs/superpowers/specs/2026-09-24-code-generation-self-healing-harness-design.md`。
+
+执行预算包含最大尝试次数、墙钟时间、Patch bytes、文件数、修改行数、Patch operation 数和模型
+Token 数。结构化 Patch 只能基于同一 Snapshot 的原始 UTF-8 byte 坐标一次性重建；校验拒绝路径越界、
+保护文件、checksum/version 不一致、重叠区间、重复锚点和 Python 语法失败，并记录 AST 结构变化。
+可信 `trace_id` 贯穿 Task、Workflow、Postmortem source event 和低敏 Span；Metrics Adapter
+额外记录阶段耗时和可选 Token 统计，但仍只是进程内低基数指标，不是资源技术 ID 的持久化审计存储。
+
+Postmortem source event 已具备幂等事实写入、独立治理 Application Service、HTTP 路由、
+可信 actor/RBAC 和 revision CAS admission Repository；长期代码经验检索投影仍未实现，不能将
+`approved` 字段存在误认为经验已可检索。
+
 ## 对象存储边界
 
 `DocumentIngestionService -> FileStorage` 是唯一上传调用方向；API Router 只调用 Application
@@ -740,6 +774,8 @@ helpful Ground Truth 的检索机会；Misleading Retrieval Rate 的分母是具
 Schema、Catalog、index、model、Prompt、准入 Policy、字段绑定 Policy、retrieval Policy 与
 threshold 版本。`evaluation_datasets` 和 `evaluation_runs` 仍是 PostgreSQL 唯一事实源，扩展契约
 写入原 JSON 列，因此不新增 migration；旧 `case_rag` JSON 缺少新字段时按兼容默认值读取。
+Dataset Repository 在读取、写入及 Evaluation Run 绑定时同时校验列元数据与不可变 JSON
+payload 的 tenant、dataset、version 和 schema 绑定；任一漂移均拒绝继续形成评估事实。
 
 文档状态由 `docs/project-status.md` 统一维护。可使用 `scripts/check-docs.ps1` 对核心 Markdown
 执行本地链接和已知过时状态声明检查；该脚本尚未接入远程 CI，也不替代代码、迁移或生产部署验收。
@@ -974,6 +1010,12 @@ InvoiceExtraction result -> TransactionCandidate -> versioned rule advisory
   -> classification / duplicate / suspicious cases -> deterministic or reviewer risk status
 ```
 
+开发与生产验收分离：开发基线可先通过
+`scripts/verify-dev-baseline.ps1` 检查 Settings、production-only preflight 的开发分支、
+应用组合根导入和 Python 编译。该脚本不连接外部依赖，不执行迁移，不验证 Milvus/S3/OIDC，
+也不产生可用于晋升的评估证据。生产 password file、真实 Suite Runner、双 Worker、
+备份恢复和告警仍必须在隔离环境单独验收；缺少条件时保持 fail closed。
+
 本地启动脚本 `scripts/manage-local.ps1 -Action start` 会在 FastAPI 启动前执行一次幂等的
 `alembic upgrade head`。迁移失败会阻止后端进程启动，避免 ORM 已升级而 PostgreSQL 结构落后的
 情况下产生 500；数据库已经处于 Head 时不会重复修改数据。该步骤只负责 Schema migration，
@@ -1187,8 +1229,9 @@ projection。两类队列支持 `FOR UPDATE SKIP LOCKED`、`lease_expires_at`、
 两类 Alias 使用租户隔离名称；Repository 注册失败时 Application Service 尝试恢复先前 Alias。
 内建 Milvus Adapter 的激活门禁在 PostgreSQL 队列完成和 Collection 可访问后，强一致遍历
 Collection 的租户、版本、ID 与 projection checksum，并与 PostgreSQL 当前合格案例或字段投影
-清单完全比对；缺失、额外、错租户、错版本或 checksum 失配均阻断激活。该代码尚未经真实 Milvus
-全量演练及隔离 PostgreSQL 双 Worker 验证，不能宣称生产索引部署已完成。
+清单完全比对；缺失、额外、错租户、错版本或 checksum 失配均阻断激活。索引 Worker 的校验
+结果会记录为低基数失败事件；它不会自行切换 Alias，失败时继续保留旧 Alias。该代码尚未经
+真实 Milvus 全量演练及隔离 PostgreSQL 双 Worker 验证，不能宣称生产索引部署已完成。
 
 完整完成度与后续任务统一见 [`project-status.md`](project-status.md)。
 后续模块化执行提示词见 [`codex-next-target-feature-prompt.md`](codex-next-target-feature-prompt.md)；

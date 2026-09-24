@@ -5,11 +5,11 @@ defineEmits(['previous', 'next'])
 </script>
 
 <template>
-  <div class="pagination-bar">
+  <nav class="pagination-bar" aria-label="分页">
     <span>本页 {{ count }} 条</span>
     <div>
       <button class="icon-btn" title="上一页" :disabled="!canPrevious" @click="$emit('previous')"><ChevronLeft :size="17" /></button>
       <button class="icon-btn" title="下一页" :disabled="!canNext" @click="$emit('next')"><ChevronRight :size="17" /></button>
     </div>
-  </div>
+  </nav>
 </template>

@@ -103,7 +103,9 @@ class SQLAlchemyEvaluationRepository:
                     )
                 )
                 if existing is not None:
-                    if _dataset_from_payload(existing.dataset_json) != dataset:
+                    persisted = _dataset_from_payload(existing.dataset_json)
+                    _validate_dataset_row_binding(existing, persisted)
+                    if persisted != dataset:
                         raise WorkflowPersistenceError(
                             "Evaluation dataset version is immutable"
                         )
@@ -145,7 +147,11 @@ class SQLAlchemyEvaluationRepository:
                         EvaluationDatasetRow.dataset_version == dataset_version,
                     )
                 )
-                return _dataset_from_payload(row.dataset_json) if row is not None else None
+                if row is None:
+                    return None
+                dataset = _dataset_from_payload(row.dataset_json)
+                _validate_dataset_row_binding(row, dataset)
+                return dataset
         except (KeyError, TypeError, ValueError, SQLAlchemyError) as exc:
             raise WorkflowPersistenceError("Evaluation dataset read failed") from exc
 
@@ -161,6 +167,22 @@ class SQLAlchemyEvaluationRepository:
                 if session.get(EvaluationDatasetRow, dataset_key) is None:
                     raise WorkflowPersistenceError(
                         "Evaluation run requires a persisted dataset version"
+                    )
+                dataset_row = session.get(EvaluationDatasetRow, dataset_key)
+                if dataset_row is None:
+                    raise WorkflowPersistenceError(
+                        "Evaluation run requires a persisted dataset version"
+                    )
+                persisted_dataset = _dataset_from_payload(dataset_row.dataset_json)
+                _validate_dataset_row_binding(dataset_row, persisted_dataset)
+                if (
+                    persisted_dataset.tenant_id != run.tenant_id
+                    or persisted_dataset.dataset_id != run.dataset_id
+                    or persisted_dataset.version != run.dataset_version
+                    or persisted_dataset.schema_version != run.schema_version
+                ):
+                    raise WorkflowPersistenceError(
+                        "Evaluation run dataset binding does not match the frozen dataset"
                     )
                 row = session.scalar(
                     select(EvaluationRunRow)
@@ -295,6 +317,23 @@ def _dataset_payload(dataset: EvaluationDataset) -> dict[str, Any]:
         "created_at": dataset.created_at.isoformat(),
         "is_frozen": dataset.is_frozen,
     }
+
+
+def _validate_dataset_row_binding(
+    row: EvaluationDatasetRow,
+    dataset: EvaluationDataset,
+) -> None:
+    """Reject column/JSON drift before a dataset becomes evaluation evidence."""
+
+    if (
+        row.tenant_id != dataset.tenant_id
+        or row.dataset_id != dataset.dataset_id
+        or row.dataset_version != dataset.version
+        or row.schema_version != dataset.schema_version
+    ):
+        raise WorkflowPersistenceError(
+            "Evaluation dataset row metadata does not match its immutable payload"
+        )
 
 
 def _case_payload(case: EvaluationCase) -> dict[str, Any]:

@@ -23,6 +23,7 @@ class TraceStage(StrEnum):
     INDEX_PROJECTION = "index_projection"
     GOVERNANCE_OPERATION = "governance_operation"
     BACKGROUND_RECOVERY = "background_recovery"
+    CODE_HARNESS = "code_harness"
 
 
 SafeTraceValue = str | int | float | bool | None

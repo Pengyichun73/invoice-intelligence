@@ -25,6 +25,9 @@ class Permission(StrEnum):
     ACCOUNTING_READ = "accounting:read"
     ACCOUNTING_GOVERN = "accounting:govern"
     ACCOUNTING_POST = "accounting:post"
+    CODE_HARNESS_READ = "code-harness:read"
+    CODE_HARNESS_EXECUTE = "code-harness:execute"
+    CODE_HARNESS_GOVERN = "code-harness:govern"
 
 
 ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {

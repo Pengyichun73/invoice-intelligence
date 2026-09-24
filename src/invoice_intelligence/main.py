@@ -59,6 +59,8 @@ app = create_app(
         transaction_analysis_service=_container.transaction_analysis_service,
         training_job_service=_container.training_job_service,
         evaluation_job_service=_container.evaluation_job_service,
+        code_harness_service=_container.code_harness_service,
+        code_harness_postmortem_service=_container.code_harness_postmortem_service,
     ),
     lifespan=_lifespan,
 )

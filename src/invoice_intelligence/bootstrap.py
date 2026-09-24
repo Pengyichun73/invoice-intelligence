@@ -123,6 +123,58 @@ from invoice_intelligence.application.services.transaction_rules import MockTran
 from invoice_intelligence.application.services.vision_extraction import (
     VisionExtractionService,
 )
+from invoice_intelligence.code_harness.application.services.code_harness import CodeHarnessService
+from invoice_intelligence.code_harness.application.services.postmortem_governance import (
+    PostmortemGovernanceService,
+)
+from invoice_intelligence.code_harness.application.services.worker import (
+    HarnessWorkerConfig,
+    HarnessWorkerService,
+)
+from invoice_intelligence.code_harness.application.ports.code_index import CodeIndex
+from invoice_intelligence.code_harness.application.ports.code_model import CodeModel
+from invoice_intelligence.code_harness.application.ports.facts import HarnessFactRepository
+from invoice_intelligence.code_harness.application.ports.parser import CodeParser
+from invoice_intelligence.code_harness.application.ports.sandbox import SandboxExecutor, SandboxPolicy
+from invoice_intelligence.code_harness.application.ports.postmortem import PostmortemRepository
+from invoice_intelligence.code_harness.application.ports.source_registry import (
+    HarnessSourceRegistry,
+)
+from invoice_intelligence.code_harness.application.ports.task_repository import HarnessTaskRepository
+from invoice_intelligence.code_harness.application.services.repository_inspection import (
+    RepositoryInspectionService,
+)
+from invoice_intelligence.code_harness.domain.repository import RepositorySource
+from invoice_intelligence.code_harness.infrastructure.observability.metrics import (
+    MetricsHarnessObservability,
+)
+from invoice_intelligence.code_harness.infrastructure.observability.privacy import (
+    PrivacyTelemetryHarnessObservability,
+)
+from invoice_intelligence.code_harness.infrastructure.indexing.snapshot_index import (
+    SnapshotCodeIndex,
+)
+from invoice_intelligence.code_harness.infrastructure.parsing.python_ast import PythonAstParser
+from invoice_intelligence.code_harness.infrastructure.parsing.grammar_registry import (
+    GrammarRegistration,
+    GrammarRegistry,
+)
+from invoice_intelligence.code_harness.infrastructure.persistence.sqlalchemy_postmortems import (
+    SQLAlchemyPostmortemRepository,
+)
+from invoice_intelligence.code_harness.infrastructure.persistence.sqlalchemy_facts import (
+    SQLAlchemyHarnessFactRepository,
+)
+from invoice_intelligence.code_harness.infrastructure.persistence.sqlalchemy_sources import (
+    SQLAlchemyHarnessSourceRegistry,
+)
+from invoice_intelligence.code_harness.infrastructure.sandbox.fail_closed import (
+    FailClosedSandboxExecutor,
+)
+from invoice_intelligence.code_harness.workflow.service import (
+    HarnessWorkflowDependencies,
+    HarnessWorkflowService,
+)
 from invoice_intelligence.config.settings import Settings, get_settings
 from invoice_intelligence.domain.document import DocumentProcessingLimits
 from invoice_intelligence.domain.examples import (
@@ -135,6 +187,9 @@ from invoice_intelligence.domain.extraction import PromptContextBudget
 from invoice_intelligence.domain.field_semantics import FieldSemanticCatalogVersion
 from invoice_intelligence.domain.invoice import InvoiceExtraction
 from invoice_intelligence.domain.storage import ObjectKind
+from invoice_intelligence.code_harness.infrastructure.persistence.sqlalchemy_tasks import (
+    SQLAlchemyHarnessTaskRepository,
+)
 from invoice_intelligence.infrastructure.accounting.mock import (
     MockAccountingPostingProvider,
     MockExchangeRateProvider,
@@ -329,6 +384,12 @@ class ApplicationContainer:
     model_training_repository: SQLAlchemyModelTrainingRepository
     training_job_service: TrainingJobService
     evaluation_job_service: EvaluationJobService
+    code_harness_service: CodeHarnessService
+    code_harness_task_repository: HarnessTaskRepository
+    code_harness_fact_repository: HarnessFactRepository
+    code_harness_postmortem_repository: PostmortemRepository
+    code_harness_postmortem_service: PostmortemGovernanceService
+    code_harness_source_registry: HarnessSourceRegistry
     training_provider: TrainingProvider
     training_artifact_reader: TrainingArtifactReader
 
@@ -363,6 +424,14 @@ def build_container(
     evaluation_job_service = EvaluationJobService(
         SQLAlchemyEvaluationJobRepository(business_engine),
         dataset_repository=evaluation_repository,
+    )
+    code_harness_task_repository = SQLAlchemyHarnessTaskRepository(business_engine)
+    code_harness_fact_repository = SQLAlchemyHarnessFactRepository(business_engine)
+    code_harness_postmortem_repository = SQLAlchemyPostmortemRepository(business_engine)
+    code_harness_source_registry = SQLAlchemyHarnessSourceRegistry(business_engine)
+    code_harness_service = CodeHarnessService(code_harness_task_repository)
+    code_harness_postmortem_service = PostmortemGovernanceService(
+        code_harness_postmortem_repository
     )
     if (
         resolved_settings.environment.value == "production"
@@ -1399,8 +1468,83 @@ def build_container(
         model_training_repository=model_training_repository,
         training_job_service=training_job_service,
         evaluation_job_service=evaluation_job_service,
+        code_harness_service=code_harness_service,
+        code_harness_task_repository=code_harness_task_repository,
+        code_harness_fact_repository=code_harness_fact_repository,
+        code_harness_postmortem_repository=code_harness_postmortem_repository,
+        code_harness_postmortem_service=code_harness_postmortem_service,
+        code_harness_source_registry=code_harness_source_registry,
         training_provider=training_provider,
         training_artifact_reader=training_artifact_reader,
+    )
+
+
+def build_harness_worker_service(
+    container: ApplicationContainer,
+    *,
+    sources: dict[tuple[str, str], RepositorySource] | None = None,
+    worker_id: str,
+    parser: CodeParser | None = None,
+    code_index: CodeIndex | None = None,
+    code_model: CodeModel | None = None,
+    sandbox: SandboxExecutor | None = None,
+    sandbox_policy: SandboxPolicy | None = None,
+) -> HarnessWorkerService:
+    """Compose one bounded Harness Worker without inventing external providers.
+
+    Parser defaults to the approved Python AST adapter. Index, model and MicroVM
+    remain explicit dependencies; absent providers fail closed in the workflow.
+    """
+
+    resolved_sandbox_policy = sandbox_policy or SandboxPolicy(
+        policy_version="code-harness-fail-closed-v1",
+        max_wall_time_seconds=1,
+        max_cpu_seconds=1,
+        max_memory_bytes=1,
+        max_disk_bytes=1,
+        network_enabled=False,
+    )
+    workflow = HarnessWorkflowService(
+        HarnessWorkflowDependencies(
+            repository_inspection=RepositoryInspectionService(),
+            sources=sources or {},
+            parser=parser
+            or PythonAstParser(
+                GrammarRegistry(
+                    (
+                        GrammarRegistration(
+                            language="python",
+                            parser_package="stdlib.ast+tokenize",
+                            parser_version="python-stdlib-v1",
+                            grammar_version="python-grammar-v1",
+                            schema_version="code-harness-v1",
+                        ),
+                    )
+                )
+            ),
+            code_index=code_index,
+            local_code_index_factory=(
+                lambda snapshot, parsed, contents: SnapshotCodeIndex(
+                    snapshot=snapshot,
+                    parsed=parsed,
+                    contents=contents,
+                )
+            ),
+            code_model=code_model,
+            sandbox=sandbox or FailClosedSandboxExecutor(),
+            sandbox_policy=resolved_sandbox_policy,
+            observability=PrivacyTelemetryHarnessObservability(
+                container.privacy_telemetry,
+                metrics=MetricsHarnessObservability(),
+            ),
+            facts=container.code_harness_fact_repository,
+        )
+    )
+    return HarnessWorkerService(
+        repository=container.code_harness_task_repository,
+        workflow=workflow,
+        config=HarnessWorkerConfig(worker_id=worker_id),
+        postmortems=container.code_harness_postmortem_repository,
     )
 
 

@@ -2,7 +2,16 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { AlertTriangle, LoaderCircle, X } from 'lucide-vue-next'
 
-const props = defineProps({ open: Boolean, title: { type: String, default: '确认治理操作' }, confirmLabel: { type: String, default: '确认' }, danger: Boolean, revision: { type: Number, default: null }, itemCount: { type: Number, default: 1 }, busy: Boolean, returnFocusSelector: { type: String, default: '' } })
+const props = defineProps({
+  open: Boolean,
+  title: { type: String, default: '确认治理操作' },
+  confirmLabel: { type: String, default: '确认' },
+  danger: Boolean,
+  revision: { type: Number, default: null },
+  itemCount: { type: Number, default: 1 },
+  busy: Boolean,
+  returnFocusSelector: { type: String, default: '' },
+})
 const emit = defineEmits(['close', 'confirm'])
 const reason = ref('')
 const dialogRef = ref(null)
@@ -53,7 +62,7 @@ function handleKeydown(event) {
 
 <template>
   <Teleport to="body">
-    <Transition name="dialog-motion">
+    <Transition name="dialog-motion" mode="out-in">
       <div v-if="open" class="dialog-backdrop" @click.self="close">
         <section ref="dialogRef" class="dialog" role="dialog" aria-modal="true" :aria-label="title" aria-describedby="governance-dialog-description" @keydown="handleKeydown">
           <header><div><AlertTriangle :size="19" /><strong>{{ title }}</strong></div><button class="icon-btn" title="关闭" :disabled="busy" @click="close"><X :size="17" /></button></header>

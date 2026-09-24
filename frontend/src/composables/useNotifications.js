@@ -22,6 +22,7 @@ function add(type, title, message, options = {}) {
     message,
     actionLabel: options.actionLabel || '',
     onAction: options.onAction || null,
+    traceId: options.traceId || null,
   })
   if (duration > 0) timers.set(id, setTimeout(() => dismiss(id), duration))
   return id
@@ -41,4 +42,3 @@ export function useNotifications() {
     info: withType('info'),
   }
 }
-

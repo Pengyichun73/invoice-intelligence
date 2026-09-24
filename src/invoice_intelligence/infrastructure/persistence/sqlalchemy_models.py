@@ -3370,3 +3370,216 @@ class EvaluationJobArtifactRow(Base):
     checksum_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     reference: Mapped[str] = mapped_column(String(128), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CodeHarnessTaskRow(Base):
+    __tablename__ = "code_harness_tasks"
+
+    task_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    trace_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    repository_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    request_fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
+    idempotency_key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    versions_json: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False)
+    budget_json: Mapped[dict[str, int]] = mapped_column(JSON, nullable=False)
+    failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    worker_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_token: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "idempotency_key_hash", name="uq_code_harness_task_idempotency"),
+        Index("ix_code_harness_tasks_scope", "tenant_id", "repository_id", "status"),
+    )
+
+
+class CodeHarnessSourceRow(Base):
+    __tablename__ = "code_harness_sources"
+
+    repository_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    root_path: Mapped[str] = mapped_column(Text, nullable=False)
+    source_revision: Mapped[str] = mapped_column(String(256), nullable=False)
+    repository_version: Mapped[str] = mapped_column(String(256), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("revision >= 1", name="ck_code_harness_sources_revision"),
+        Index("ix_code_harness_sources_tenant_enabled", "tenant_id", "enabled"),
+    )
+
+
+class CodeHarnessAttemptRow(Base):
+    __tablename__ = "code_harness_attempts"
+
+    attempt_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("code_harness_tasks.task_id", ondelete="CASCADE"), nullable=False
+    )
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    worker_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    lease_token: Mapped[str] = mapped_column(String(128), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    __table_args__ = (
+        UniqueConstraint("task_id", "attempt_number", name="uq_code_harness_attempt_number"),
+    )
+
+
+class CodeHarnessSnapshotRow(Base):
+    __tablename__ = "code_harness_snapshots"
+
+    snapshot_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    repository_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_revision: Mapped[str] = mapped_column(String(256), nullable=False)
+    manifest_checksum_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    files_json: Mapped[list[dict[str, object]]] = mapped_column(JSON, nullable=False)
+    versions_json: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "repository_id", "revision", name="uq_code_harness_snapshot_revision"),
+    )
+
+
+class CodeHarnessPatchRow(Base):
+    __tablename__ = "code_harness_patches"
+
+    patch_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    repository_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    snapshot_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    snapshot_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    operations_json: Mapped[list[dict[str, object]]] = mapped_column(JSON, nullable=False)
+    patch_checksum_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CodeHarnessExecutionRow(Base):
+    __tablename__ = "code_harness_executions"
+
+    execution_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("code_harness_tasks.task_id", ondelete="CASCADE"), nullable=False
+    )
+    attempt_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    result_summary: Mapped[str] = mapped_column(String(4096), nullable=False)
+    error_signature: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    __table_args__ = (
+        UniqueConstraint(
+            "task_id",
+            "attempt_id",
+            name="uq_code_harness_execution_attempt",
+        ),
+    )
+
+
+class CodeHarnessWatchdogRow(Base):
+    __tablename__ = "code_harness_watchdogs"
+
+    observation_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    attempt_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(32), nullable=False)
+    error_signature: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    changed_ast_fingerprint: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    changed_symbols: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    changed_diagnostics: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CodeHarnessPostmortemRow(Base):
+    __tablename__ = "code_harness_postmortems"
+
+    postmortem_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
+    version_scope: Mapped[str] = mapped_column(String(256), nullable=False)
+    occurrence_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    admission_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    error_signature: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    root_cause: Mapped[str | None] = mapped_column(String(4096), nullable=True)
+    solution_pattern: Mapped[str | None] = mapped_column(String(4096), nullable=True)
+    affected_language: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    affected_symbol_kind: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    patch_shape: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    source_trace_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    source_event_ids_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "fingerprint", "version_scope",
+            name="uq_code_harness_postmortem_scope",
+        ),
+    )
+
+
+class CodeHarnessPostmortemSourceEventRow(Base):
+    __tablename__ = "code_harness_postmortem_source_events"
+
+    event_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    postmortem_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
+    version_scope: Mapped[str] = mapped_column(String(256), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload_summary: Mapped[str] = mapped_column(String(512), nullable=False)
+    payload_checksum_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_repository_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    source_snapshot_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_revision: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    source_task_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_patch_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_execution_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CodeHarnessAuditRow(Base):
+    __tablename__ = "code_harness_audits"
+
+    audit_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    resource_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    resource_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    reason_code: Mapped[str] = mapped_column(String(128), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CodeHarnessProjectionRow(Base):
+    __tablename__ = "code_harness_projections"
+
+    projection_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    snapshot_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    index_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    worker_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_token: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "snapshot_id", "index_version", name="uq_code_harness_projection"),
+    )

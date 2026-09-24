@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   Archive,
   BarChart3,
@@ -72,8 +72,22 @@ const storedView = window.localStorage.getItem('invoice-console-view')
 const initial = viewKeys.has(hashView) ? hashView : storedView
 const activeKey = ref(views.some((item) => item.key === initial) ? initial : 'dashboard')
 const mobileOpen = ref(false)
+const drawerRef = ref(null)
+const menuTriggerRef = ref(null)
+const reducedMotion = ref(window.matchMedia('(prefers-reduced-motion: reduce)').matches)
 const active = computed(() => views.find((item) => item.key === activeKey.value) || views[0])
 const activeGroup = computed(() => groups.find((group) => group.key === active.value.group) || groups[0])
+let motionMediaQuery
+const handleMotionPreference = (event) => { reducedMotion.value = event.matches }
+
+watch(mobileOpen, (open) => {
+  document.body.classList.toggle('drawer-open', open)
+  if (open) {
+    nextTick(() => drawerRef.value?.focus())
+  } else {
+    nextTick(() => menuTriggerRef.value?.focus())
+  }
+})
 
 async function announceView() {
   await nextTick()
@@ -121,9 +135,15 @@ function restoreFromHistory() {
 onMounted(() => {
   if (!viewKeys.has(hashView)) window.history.replaceState(null, '', `#${activeKey.value}`)
   window.addEventListener('popstate', restoreFromHistory)
+  motionMediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
+  motionMediaQuery.addEventListener?.('change', handleMotionPreference)
   announceView()
 })
-onBeforeUnmount(() => window.removeEventListener('popstate', restoreFromHistory))
+onBeforeUnmount(() => {
+  window.removeEventListener('popstate', restoreFromHistory)
+  motionMediaQuery?.removeEventListener?.('change', handleMotionPreference)
+  document.body.classList.remove('drawer-open')
+})
 </script>
 
 <template>
@@ -150,7 +170,7 @@ onBeforeUnmount(() => window.removeEventListener('popstate', restoreFromHistory)
         <i />
         <span><strong>受控工作区</strong><small>身份由可信上下文确认</small></span>
       </div>
-      <button class="icon-btn menu-trigger" title="打开全部功能" @click="mobileOpen = true">
+      <button ref="menuTriggerRef" class="icon-btn menu-trigger" title="打开全部功能" @click="mobileOpen = true">
         <Menu :size="20" />
       </button>
     </header>
@@ -169,7 +189,7 @@ onBeforeUnmount(() => window.removeEventListener('popstate', restoreFromHistory)
       </div>
     </nav>
 
-    <main class="main-area">
+    <main id="main-content" class="main-area" tabindex="-1">
       <div class="page-container">
         <Transition name="page-swap" mode="out-in" @after-enter="announceView">
           <KeepAlive>
@@ -194,8 +214,11 @@ onBeforeUnmount(() => window.removeEventListener('popstate', restoreFromHistory)
       <button @click="mobileOpen = true"><Menu :size="18" /><span>全部</span></button>
     </nav>
 
-    <div v-if="mobileOpen" class="nav-scrim" @click="mobileOpen = false" />
-    <aside class="function-drawer" :class="{ open: mobileOpen }" aria-label="全部功能">
+    <Transition name="drawer-scrim">
+      <div v-if="mobileOpen" class="nav-scrim" @click="mobileOpen = false" />
+    </Transition>
+    <Transition name="drawer-panel">
+      <aside ref="drawerRef" v-if="mobileOpen" class="function-drawer" aria-label="全部功能" aria-modal="true" role="dialog" tabindex="-1" @keydown.esc="mobileOpen = false">
       <header>
         <div><small>功能导航</small><strong>全部工作区</strong></div>
         <button class="icon-btn" title="关闭菜单" @click="mobileOpen = false"><X :size="19" /></button>
@@ -212,6 +235,7 @@ onBeforeUnmount(() => window.removeEventListener('popstate', restoreFromHistory)
           <span>{{ item.label }}</span>
         </button>
       </section>
-    </aside>
+      </aside>
+    </Transition>
   </div>
 </template>

@@ -275,6 +275,11 @@ onMounted(loadOcrMetrics)
         <ResourceState :loading="caseState.loading" :error="caseState.error" :empty="!caseState.index" empty-text="输入版本查询案例索引状态" @retry="loadCaseIndex">
           <template v-if="caseState.index">
             <header class="section-head"><div><span>案例记忆索引</span><h2>{{ caseState.index.index_version }}</h2></div><StatusBadge :value="caseState.index.is_valid ? (caseState.index.is_active ? 'index_active' : 'ready_to_activate') : 'invalidated'" /></header>
+            <div class="index-facts">
+              <div><span>PostgreSQL 投影登记</span><strong><StatusBadge :value="caseCounts.failed ? 'warning' : 'indexed'" /></strong><small>权威状态已读取</small></div>
+              <div><span>Milvus 实时健康</span><strong><StatusBadge value="not_reported" /></strong><small>本接口未提供实时探针</small></div>
+              <div><span>激活门禁</span><strong><StatusBadge :value="caseState.index.is_active ? 'approved' : 'review_required'" /></strong><small>{{ caseState.index.is_active ? '当前版本已激活' : '仍需满足投影完整性条件' }}</small></div>
+            </div>
             <div class="button-row">
               <button class="secondary-btn" :disabled="operation.busy || !(caseCounts.pending || caseCounts.failed)" @click="projectCaseIndex"><Play :size="15" />处理待投影</button>
               <button class="primary-btn" :disabled="operation.busy || caseState.index.is_active || caseCounts.pending || caseCounts.processing || caseCounts.failed" @click="activateCaseIndex"><CheckCircle2 :size="15" />激活版本</button>
@@ -298,6 +303,11 @@ onMounted(loadOcrMetrics)
         <ResourceState :loading="semanticState.loading" :error="semanticState.error" :empty="!semanticState.index" empty-text="输入版本查询字段语义索引状态" @retry="loadSemanticIndex">
           <template v-if="semanticState.index">
             <header class="section-head"><div><span>字段语义索引</span><h2>{{ semanticState.index.index_version }}</h2></div><StatusBadge :value="semanticState.index.is_valid ? (semanticState.index.is_active ? 'index_active' : 'ready_to_activate') : 'invalidated'" /></header>
+            <div class="index-facts">
+              <div><span>PostgreSQL 投影登记</span><strong><StatusBadge :value="semanticCounts.failed ? 'warning' : 'indexed'" /></strong><small>权威状态已读取</small></div>
+              <div><span>Milvus 实时健康</span><strong><StatusBadge value="not_reported" /></strong><small>本接口未提供实时探针</small></div>
+              <div><span>激活门禁</span><strong><StatusBadge :value="semanticState.index.is_active ? 'approved' : 'review_required'" /></strong><small>{{ semanticState.index.is_active ? '当前版本已激活' : '仍需满足投影完整性条件' }}</small></div>
+            </div>
             <div class="button-row">
               <button class="secondary-btn" :disabled="operation.busy || !(semanticCounts.pending || semanticCounts.failed)" @click="projectSemanticIndex"><Play :size="15" />处理待投影</button>
               <button class="primary-btn" :disabled="operation.busy || semanticState.index.is_active || semanticCounts.pending || semanticCounts.processing || semanticCounts.failed" @click="activateSemanticIndex"><CheckCircle2 :size="15" />激活版本</button>

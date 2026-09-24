@@ -11,9 +11,9 @@
   },
   "dependencies": {
     "@vitejs/plugin-vue": "latest",
+    "@vueuse/motion": "^3.0.3",
     "lucide-vue-next": "latest",
     "vite": "latest",
     "vue": "latest"
-  },
-  "devDependencies": {}
+  }
 }

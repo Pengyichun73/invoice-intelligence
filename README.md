@@ -14,6 +14,20 @@ Training Registry 和独立财务 Domain 已有实现；Evaluation Job 的 Postg
 [`docs/codex-next-target-feature-prompt.md`](docs/codex-next-target-feature-prompt.md)；
 该提示词要求先核对当前事实，再按 P0→P2 顺序推进，不能把 Mock、Stub 或配置解析当成生产验收。
 
+代码生成与自愈 Harness 当前为部分实现：已建立 Domain/Port 契约、完整版本绑定、固定八阶段 Runner、
+Repository Snapshot、Python AST/结构化参数与本地精确检索适配器、结构化 Patch 校验、Grammar 显式注册、Snapshot/
+Patch/Execution/Watchdog PostgreSQL 事实写入、PostgreSQL
+首版事实迁移/Task/Postmortem/Repository Source Registry Repository、Task claim/lease fencing、
+通用 Harness Worker、Harness API、共享隐私 Trace/低敏 Metrics Adapter 和默认拒绝 Sandbox；尚未完成真实多语言
+Parser、Code Model、代码 Milvus 或 MicroVM Sandbox。设计见
+[`docs/code-harness.md`](docs/code-harness.md)，新项目初始化提示词见
+[`docs/code-harness-initialization-prompt.md`](docs/code-harness-initialization-prompt.md)；
+任务预算、Patch 语法/AST 校验和可信 `trace_id` 持久化已接入；Patch 契约已覆盖受控
+`create_file` 与显式许可的 `delete_file`，Postmortem 已具备独立治理
+Application/API、可信 actor、租户边界和 revision CAS admission，但长期代码经验检索投影尚未接入。
+低敏 Metrics 记录进程内计数器、阶段耗时和可选 Token 统计，但不持久化资源技术 ID。不得将已实现的契约、Stub、首版迁移或配置解析视为 Harness
+生产验收。
+
 ## 隔离 Suite Runner 接入
 
 Evaluation Worker 默认只运行 `diagnostic_only` Snapshot Job；Suite Job 在未配置 Runner 时
@@ -111,7 +125,9 @@ Idempotency-Key 原文、远程响应体或 Chain-of-Thought。Trace ID 不是�
 
 PostgreSQL 仍是治理审计唯一事实源；历史审计缺失 `resource_version`/`trace_id` 时保持 `null`。
 阶段日志、外部 Trace Collector 和 Milvus 均不参与治理事务。`indexed` 只表示 PostgreSQL 已记录
-一次成功投影，不能证明查询时 Milvus 实体仍存在、Collection 已加载或远程服务健康。
+一次成功投影，不能证明查询时 Milvus 实体仍存在、Collection 已加载或远程服务健康。索引 Worker
+启用校验时会记录校验失败并保持投影版本不可激活；Alias 切换仍只能由授权 API 执行，旧 Alias
+不会因后台校验失败而被替换。
 
 ## 快速启动（Windows PowerShell）
 
@@ -688,6 +704,8 @@ PostgreSQL 继续通过 `evaluation_datasets/evaluation_runs` 保存完整版本
 `evaluation_report_artifacts` 中保存不可变的 JSON/Markdown 聚合报告及 SHA-256；报告只包含
 聚合值、版本和不可逆 fingerprint，不包含发票原值、图片或完整 Prompt。冻结数据集必须同时记录训练侧模板指纹和每个评估案例的模板指纹；缺失
 指纹无法证明按模板隔离，会被拒绝，旧数据也不能作为晋升证据。
+Repository 读取、写入和 Evaluation Run 绑定时还会校验数据库列元数据与不可变 JSON
+payload 的 tenant、dataset、version 和 schema 一致性；发现漂移即 fail closed，不产生可晋升证据。
 
 Hard Negative 导出只接收人工标签，租户默认不可混合，导出前脱敏，并按文档/模板分组切分。
 Training Registry、版本化导出、产物校验和独立 PostgreSQL claim/lease Worker 已实现。默认
@@ -743,6 +761,18 @@ Promotion Candidate 的门禁输入已改为从可信 PostgreSQL 评估、产物
 完整的首次初始化、日常启动、PaddleOCR、健康检查和停止顺序见本文顶部
 “快速启动（Windows PowerShell）”。`docker-compose.yml` 已包含 API、migration、Worker、OIDC、
 Milvus、MinIO 和 MLOps 等显式 profile；默认不启动任何服务，前端仍需单独启动。
+
+开发流程不要求先完成生产验收。可使用以下命令检查本地配置、应用组合根导入和 Python 编译；
+该检查不连接 PostgreSQL、Milvus、S3、OIDC 或远程 Provider，也不会把开发结果标记为生产就绪：
+
+```powershell
+.\scripts\verify-dev-baseline.ps1
+```
+
+脚本要求 `INVOICE_INTELLIGENCE_ENVIRONMENT=development`、开发认证模式和显式
+`INVOICE_INTELLIGENCE_DEV_TENANT_ID`。真实 Suite Runner、生产 password file、OIDC、S3、
+Milvus 完整性、备份恢复和告警验收仍由后续隔离环境任务单独执行；缺少这些条件时相关路径继续
+保持 fail closed。
 
 开发环境 `.env` 中的 `INVOICE_INTELLIGENCE_DEV_TENANT_ID=demo-tenant` 仅用于本地测试，
 会安装一个明确的本地可信租户上下文；切换到 staging/production 前必须删除该配置并接入

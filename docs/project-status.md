@@ -28,10 +28,21 @@
 | 模型晋升与回滚 | 受限可用 | 客户端不能声明门禁事实；同租户 Evaluation/Artifact/Version 重载、审批 CAS 与有效历史目标回滚已实现；仅切换 PostgreSQL 注册状态，非真实部署 |
 | 财务 Domain | 受限可用 | AccountingCandidate、规则版本、汇率快照、posting proposal、幂等/CAS 和同租户完成 Run 校验已实现；仅提供 mock 外部财务 Adapter |
 | 交易分析 Domain | 受限可用 | 候选由同租户 completed Result 派生，审核采用幂等与 revision/CAS；历史不可信候选仅可审计升级为 escalated，规则仍为开发 Mock |
+| Code Generation and Self-Healing Harness | 部分实现 | 已有 Domain/Port、完整版本绑定、固定八阶段 Runner、Snapshot/结构化 Patch 校验、受控 create/delete Patch 契约、Python AST/结构化参数/精确检索适配器、caller/callee/dependency 结构化查询、Snapshot/Patch/Execution/Watchdog PostgreSQL 事实写入、Task/Postmortem/Repository Source Registry repository、Task/Attempt claim/lease fencing、通用 Worker、含 Repository/Snapshot/Task/Patch/Execution 来源的结构化 Postmortem source event、Postmortem 治理 Application/API、预算与可信 trace_id、共享隐私 Trace/低敏 Metrics Adapter、Grammar Registry、Harness API 和独立 Worker 入口、fail-closed Sandbox；Source Registry 注册/更新治理 API、运行时 reload、真实多语言 Parser、Code Model、代码 Milvus、MicroVM 和长期代码经验投影仍未完成 |
 | Docker Compose | 受限可用 | profile、volume、resource limit、liveness/readiness、runtime worker probe 和 `.dockerignore` 已配置；数据库 secret 容器连接及完整生产演练仍未完成 |
 | Observability 与 DLP | 受限可用 | 低基数 Worker/Provider/audit failure metrics、熔断计数和受控 `/metrics` 已实现；未接 Prometheus/Grafana、共享 Provider 配额、生产 DLP 或外部 Trace Collector |
 
 ## 已完成主路径
+
+- Harness 已建立租户边界、版本契约、Repository Snapshot、结构化 Patch、Watchdog/Postmortem Domain，
+  固定八阶段 Runner、Application Service 入口、Task claim/lease fencing、通用 Worker、低敏 Metrics
+  Adapter、Attempt 完成 fencing、结构化 Postmortem source event、Snapshot/路径/范围校验和默认拒绝
+  Sandbox；预算包括最大修改行数、Patch operation 数和模型 Token 数，可信 `trace_id` 已贯穿
+  Task/Workflow/Postmortem；这些能力仍不代表真实外部依赖或生产执行能力。
+
+- Harness Parser 已通过 `GrammarRegistry` 做语言注册门禁；Snapshot 对常见二进制内容执行保守分类，
+  Parser 不读取二进制源码，结构化 Patch 默认拒绝二进制文件；代码上下文检索使用结构化
+  `CodeQuery` Port，不退化为绕过 Port 的自由文本查询。
 
 - 固定 `InvoiceExtraction` Schema 的 Vision 提取、Schema validation、字段 evidence 覆盖和有限重试。
 - 确定性单一 LangGraph Workflow、人工中断/恢复和 Review Task 生命周期。
@@ -39,7 +50,9 @@
 - 冲突关闭请求的短事务消费者；仅明确因该冲突隔离的案例会重新进入准入队列，别名和其他原因仍需人工复核。
 - 版本化 Training Registry 与独立 training worker；未配置 Provider 时明确 fail closed。
 - 独立 Accounting Domain；识别结果不会直接入账，默认只连接 mock provider。
-- Alembic 代码当前只有一个 head：`20260924_0039_evaluation_report_artifacts`；未对真实数据库执行迁移。
+- 开发基线脚本 `scripts/verify-dev-baseline.ps1` 已建立：在 development 环境检查本地可信租户、
+  应用组合根导入和 Python 编译，不连接外部依赖；该检查不替代生产 Compose 或隔离环境验收。
+- Alembic 代码当前只有一个 head：`20260924_0041_code_harness_sources`；未对真实数据库执行迁移。
 
 ## 已知阻塞与风险
 
@@ -82,17 +95,31 @@
 13. 已增加本地文档链接与状态声明检查脚本；远程 CI 接入仍需仓库环境。
 14. 已完成：项目所有者选择 Apache-2.0，根级 `LICENSE` 已添加；第三方依赖和参考项目仍按各自许可证处理。
 15. 前端已新增“运行治理 → 后台操作”聚合入口，覆盖 Evaluation Job 查询、Training Job 查询/取消/重试、Promotion Candidate 创建/审批/拒绝/回滚和 Transaction Candidate 分析/复核；仅展示脱敏状态与版本元数据，不代表后台 Worker 或生产部署已完成。
+16. 为 Harness 增加长期代码经验派生投影和受控检索；在此之前，source event 与 `approved` 状态
+    仅表示 PostgreSQL 基础事实已通过治理 CAS，不表示可检索长期记忆已生效。
 
 ## 本次盘点验证
 
 - 代码、路由、Repository、Worker、migration、配置和 Compose 均按实现读取，而非按命名判断。
-- 当前代码 Alembic revision 为单一 head：`20260924_0039_evaluation_report_artifacts`；尚未执行真实数据库迁移。
+- 当前代码 Alembic revision 为单一 head：`20260924_0041_code_harness_sources`；本次未执行真实数据库迁移。
 - 使用 `.env.example` 补齐 Compose 变量后，`docker compose config --quiet` 可解析配置结构；这不代表服务可生产启动。
 - Ruff 只读检查结果为 99 个问题：44 `UP012`、30 `E501`、12 `UP046`、9 `UP035`、3 `UP040`、1 `UP047`；本轮选定的 `F401`、`F841`、`I001` 已清零。
 - 初始文档统一时未运行 pytest；后续各任务的定向验证见下方交付记录。未启动服务、未连接真实 Provider 或生产数据库。
 
 ## 后续交付记录
 
+- `2026-09-24`：新增 `code_harness_sources` PostgreSQL 事实表、SQLAlchemy Repository 和
+  Composition Root/Worker 装配；Harness Worker 启动时仅加载已启用的预登记 Source，缺少迁移、
+  Source 或外部 Parser/Model/Index/MicroVM 时继续 fail closed。Source 注册/更新治理 API、
+  运行时 reload 和真实 PostgreSQL 验收仍未完成。
+- `2026-09-24`：新增 `scripts/verify-dev-baseline.ps1`，用于在 development 环境验证本地可信租户、
+  开发认证、production-only preflight 分支、应用组合根导入和 Python 编译；脚本不连接 PostgreSQL、
+  Milvus、S3、OIDC 或远程 Provider，不执行迁移，也不生成评估或晋升证据。开发逻辑可继续运行，
+  真实生产与隔离环境验收仍保持为后续受限模块。
+- `2026-09-24`：索引投影 Worker 不再静默丢弃两类 `verify_index_version()` 的失败结果；校验
+  失败会写入低基数 Worker 指标和脱敏结构化日志，并保持版本不可激活。Worker 不切换 Alias，
+  因此旧 Alias 继续保留。新增 Worker 行为回归；索引门禁与租约定向验证共 `17 passed`。
+  真实 Milvus 与隔离 PostgreSQL 双 Worker 验收仍未执行。
 - `2026-09-23`：Training 四个端点接入 `training:submit`；权限拒绝审计、Training 路由覆盖和
   跨租户 404 定向用例已通过。执行 `test_auth_security.py`、
   `test_training_registry_repository.py`、`test_training_api.py`：15 passed。未运行迁移或启动服务。
@@ -207,6 +234,10 @@
   以不可变内容和 SHA-256 保存到 PostgreSQL；Suite Job 完成与 Promotion Evidence 重载均
   校验 Run、tenant、schema、内容和引用顺序，缺失或篡改时 fail closed。评估绑定与晋升定向
   回归 29 passed，迁移保留旧诊断行的等价 SQLite 验证已补齐；真实数据库迁移仍未执行。
+- `2026-09-24`：Evaluation Dataset Repository 新增列元数据与不可变 JSON payload 的
+  tenant、dataset、version、schema 一致性校验，并在 Evaluation Run 绑定时再次核对冻结数据集；
+  漂移或失配直接抛出持久化错误，阻止形成可晋升评估事实。评估完整性与相关回归共
+  `30 passed`，新增测试 Ruff 通过；真实 PostgreSQL、隔离 Runner 与生产迁移仍未执行。
 
 ## 当前不得对外宣称
 
