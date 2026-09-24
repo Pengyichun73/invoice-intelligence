@@ -1,0 +1,107 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "invoice-intelligence"
+version = "0.1.0"
+description = "Deterministic invoice and image extraction workflow with human review and correction memory."
+readme = "README.md"
+license = { text = "Apache-2.0" }
+license-files = ["LICENSE"]
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "alembic>=1.14,<2.0",
+    "boto3>=1.35,<2.0",
+    "fastapi>=0.115,<1.0",
+    "httpx>=0.27,<1.0",
+    "langchain-core>=1.0,<2.0",
+    "langgraph>=1.0,<2.0",
+    "langgraph-checkpoint-postgres>=3.0,<4.0",
+    "langgraph-checkpoint-sqlite>=3.0,<4.0",
+    "openai>=2.0,<3.0",
+    "Pillow>=11.0,<13.0",
+    "pgvector>=0.3,<1.0",
+    "pymilvus>=2.6,<3.0",
+    "psycopg[binary]>=3.2,<4.0",
+    "pydantic>=2.10,<3.0",
+    "pydantic-settings>=2.6,<3.0",
+    "PyMuPDF>=1.25,<2.0",
+    "python-multipart>=0.0.20,<1.0",
+    "PyJWT[crypto]>=2.10,<3.0",
+    "SQLAlchemy>=2.0,<3.0",
+    "uvicorn[standard]>=0.32,<1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.15,<2.0",
+    "pytest>=8.3,<9.0",
+    "pytest-asyncio>=0.25,<1.0",
+    "ruff>=0.11,<1.0",
+]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["invoice_intelligence*"]
+
+[tool.setuptools.package-data]
+invoice_intelligence = ["py.typed"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = [
+    "src/invoice_intelligence/bootstrap.py",
+    "src/invoice_intelligence/config/settings.py",
+    "src/invoice_intelligence/domain/invoice.py",
+    "src/invoice_intelligence/domain/accounting.py",
+    "src/invoice_intelligence/domain/field_semantics.py",
+    "src/invoice_intelligence/domain/governance.py",
+    "src/invoice_intelligence/application/ports/observability.py",
+    "src/invoice_intelligence/application/ports/training_registry.py",
+    "src/invoice_intelligence/application/services/training_jobs.py",
+    "src/invoice_intelligence/application/services/training_worker.py",
+    "src/invoice_intelligence/application/ports/accounting.py",
+    "src/invoice_intelligence/application/services/accounting.py",
+    "src/invoice_intelligence/application/services/extraction_validation.py",
+    "src/invoice_intelligence/application/services/field_semantic_binding.py",
+    "src/invoice_intelligence/application/services/field_semantic_catalog.py",
+    "src/invoice_intelligence/application/services/field_semantic_index_projection.py",
+    "src/invoice_intelligence/application/services/memory_governance.py",
+    "src/invoice_intelligence/application/services/multi_source_ocr_comparison.py",
+    "src/invoice_intelligence/application/services/vision_extraction.py",
+    "src/invoice_intelligence/infrastructure/corrections/scopes.py",
+    "src/invoice_intelligence/infrastructure/observability/ocr.py",
+    "src/invoice_intelligence/infrastructure/ocr/paddlex_http.py",
+    "src/invoice_intelligence/infrastructure/persistence/sqlalchemy_models.py",
+    "src/invoice_intelligence/infrastructure/persistence/sqlalchemy_training_registry.py",
+    "src/invoice_intelligence/infrastructure/persistence/sqlalchemy_accounting.py",
+    "src/invoice_intelligence/infrastructure/persistence/sqlalchemy_admission.py",
+    "src/invoice_intelligence/infrastructure/qwen/vision.py",
+    "src/invoice_intelligence/infrastructure/vision/structured.py",
+    "src/invoice_intelligence/api/presenters.py",
+    "src/invoice_intelligence/api/routes/accounting.py",
+    "src/invoice_intelligence/api/schemas/accounting.py",
+    "src/invoice_intelligence/api/routes/field_semantics.py",
+    "src/invoice_intelligence/api/routes/memory.py",
+    "src/invoice_intelligence/api/schemas/common.py",
+    "src/invoice_intelligence/api/schemas/memory.py",
+    "src/invoice_intelligence/workers/memory_admission.py",
+    "src/invoice_intelligence/workers/training.py",
+    "src/invoice_intelligence/domain/training_registry.py",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

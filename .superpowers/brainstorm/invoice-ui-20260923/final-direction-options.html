@@ -1,0 +1,69 @@
+<h2>选择最终产品定位</h2>
+<p class="subtitle">以下方案都保留现有后端边界和四大工作区，只比较客户第一屏与日常操作重心。</p>
+
+<div class="cards">
+  <div class="card" data-choice="A" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mock-nav">发票智能中枢　 工作台　 可信记忆　 字段语义　 运行治理</div>
+      <div style="display:grid;grid-template-columns:1fr 260px;gap:12px;padding:16px;background:#0b1217;min-height:220px">
+        <div>
+          <div class="placeholder" style="height:58px;margin-bottom:12px">待审核队列　 12 项高风险任务</div>
+          <div class="placeholder" style="height:42px;margin-bottom:8px">发票 2026-0918　字段冲突　立即审核</div>
+          <div class="placeholder" style="height:42px;margin-bottom:8px">发票 2026-0917　待人工确认　打开</div>
+          <div class="placeholder" style="height:42px">发票 2026-0916　记忆准入待处理　查看</div>
+        </div>
+        <div class="placeholder">系统状态<br><br>提取链路　在线<br>OCR　已接入<br>记忆准入　待处理 4<br>索引投影　未报告</div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A　审核作业台优先</h3>
+      <p>第一眼看到真实待办和风险，适合每天处理大量发票的审核人员。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="B" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mock-nav">发票智能中枢　 工作台　 可信记忆　 字段语义　 运行治理</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding:16px;background:#0b1217;min-height:220px">
+        <div class="placeholder">待准入<br><br><strong>4</strong><br><br>进入记忆治理</div>
+        <div class="placeholder">字段冲突<br><br><strong>2</strong><br><br>进入语义治理</div>
+        <div class="placeholder">后台任务<br><br><strong>3</strong><br><br>查看运行治理</div>
+        <div class="placeholder" style="grid-column:1 / -1;height:72px">版本、审计、索引和评估状态以技术摘要方式集中展示</div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B　治理控制台优先</h3>
+      <p>第一眼看到治理事项、版本和后台状态，适合平台管理员与质量负责人。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="C" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mock-nav">发票智能中枢　 工作台　 可信记忆　 字段语义　 运行治理</div>
+      <div style="display:grid;grid-template-columns:1.15fr .85fr;gap:12px;padding:16px;background:#0b1217;min-height:220px">
+        <div>
+          <div class="placeholder" style="height:58px;margin-bottom:12px">今日工作概览　处理链路真实状态</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+            <div class="placeholder" style="height:65px">待审核　4</div>
+            <div class="placeholder" style="height:65px">待准入　4</div>
+            <div class="placeholder" style="height:65px">字段冲突　2</div>
+            <div class="placeholder" style="height:65px">服务状态　在线</div>
+          </div>
+        </div>
+        <div class="placeholder">快捷入口<br><br>上传并提取发票<br>处理审核任务<br>查看记忆准入<br>查看后台操作</div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C　平衡型运营台</h3>
+      <p>第一屏同时给出待办、状态和快捷入口，兼顾审核人员、治理人员与管理者。</p>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>共同最终效果</h3>
+  <div class="pros-cons">
+    <div class="pros"><h4>保留</h4><ul><li>单一确定性 Workflow</li><li>人工审核是唯一业务确认入口</li><li>PostgreSQL 是事实源，Milvus 只做派生索引</li><li>真实状态、明确失败和可恢复操作</li></ul></div>
+    <div class="cons"><h4>明确不做</h4><ul><li>不伪造进度或自动批准</li><li>不引入开放式 Agent 或多 Agent</li><li>不把模型建议当最终事实</li><li>不宣称未验收的生产能力</li></ul></div>
+  </div>
+</div>

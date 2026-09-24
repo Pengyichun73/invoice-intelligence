@@ -1,0 +1,2 @@
+"""Invoice Intelligence application package."""
+

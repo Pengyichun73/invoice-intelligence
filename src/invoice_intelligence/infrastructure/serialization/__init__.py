@@ -1,0 +1,1 @@
+"""Checkpoint-safe serialization adapters."""

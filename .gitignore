@@ -1,0 +1,44 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+!.env.compose.example
+secrets/*.txt
+deploy/nginx/certs/*.key
+deploy/nginx/certs/*.crt
+
+# Python
+.venv/
+.venv-ocr/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Build and runtime output
+build/
+dist/
+logs/
+data/
+artifacts/
+.data/
+.tmp/
+.test-tmp/
+
+# External reference repositories
+/references/
+
+# OS and IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

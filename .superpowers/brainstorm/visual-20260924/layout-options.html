@@ -1,0 +1,37 @@
+<h2>选择总览工作台的信息层级</h2>
+<p class="subtitle">点击一个方案，确认后我会继续细化交互与页面结构。</p>
+
+<div class="split">
+  <div class="mockup" data-choice="a" onclick="toggleSelect(this)">
+    <div class="mockup-header">A · 待办队列优先</div>
+    <div class="mockup-body" style="background:#071016;color:#dcebea;padding:16px;font-family:system-ui">
+      <div style="display:flex;justify-content:space-between;border-bottom:1px solid #26373d;padding-bottom:12px">
+        <strong>发票智能中枢</strong><span style="color:#6dd3d1;font-size:11px">受控工作区</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:14px 0">
+        <div style="border:1px solid #5b492b;padding:10px"><small style="color:#8b9b9b">待处理</small><b style="display:block;color:#e6b65e;font-size:22px;margin-top:5px">18</b></div>
+        <div style="border:1px solid #2e604d;padding:10px"><small style="color:#8b9b9b">今日完成</small><b style="display:block;color:#75dbac;font-size:22px;margin-top:5px">42</b></div>
+        <div style="border:1px solid #294b52;padding:10px"><small style="color:#8b9b9b">有效案例</small><b style="display:block;color:#dcebea;font-size:22px;margin-top:5px">1,284</b></div>
+        <div style="border:1px solid #703d44;padding:10px"><small style="color:#8b9b9b">开放冲突</small><b style="display:block;color:#eb858c;font-size:22px;margin-top:5px">3</b></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1.5fr 1fr;gap:10px">
+        <div style="border:1px solid #26373d;padding:12px"><small style="color:#6dd3d1">优先处理队列</small><div style="border-top:1px solid #26373d;margin-top:9px;padding-top:10px">供应商名称 · 字段冲突</div><div style="border-top:1px solid #26373d;margin-top:10px;padding-top:10px">金额合计 · 待人工确认</div><div style="border-top:1px solid #26373d;margin-top:10px;padding-top:10px">税额 · 证据不足</div></div>
+        <div style="border:1px solid #26373d;padding:12px"><small style="color:#6dd3d1">系统状态</small><div style="margin-top:12px;color:#75dbac">● API 正常</div><div style="margin-top:10px;color:#75dbac">● 数据库已连接</div><div style="margin-top:10px;color:#e6b65e">● 索引待治理</div></div>
+      </div>
+    </div>
+    <div class="card-body"><h3>适合日常审核</h3><p>第一屏直接回答“现在最需要我处理什么”。</p></div>
+  </div>
+
+  <div class="mockup" data-choice="b" onclick="toggleSelect(this)">
+    <div class="mockup-header">B · 指标与风险并列</div>
+    <div class="mockup-body" style="background:#071016;color:#dcebea;padding:16px;font-family:system-ui">
+      <div style="border-bottom:1px solid #26373d;padding-bottom:12px"><strong>今天的识别运营</strong><div style="color:#84999b;font-size:11px;margin-top:5px">只展示影响决策的核心信号</div></div>
+      <div style="display:grid;grid-template-columns:1.1fr .9fr;gap:10px;margin-top:14px">
+        <div style="border:1px solid #26373d;padding:12px"><small style="color:#6dd3d1">处理链路</small><div style="font-size:28px;margin:12px 0;color:#75dbac">96.4%</div><div style="height:7px;background:#1b3036"><div style="height:7px;width:82%;background:#75dbac"></div></div><small style="display:block;color:#84999b;margin-top:8px">完成率 · 过去 24 小时</small></div>
+        <div style="border:1px solid #703d44;padding:12px"><small style="color:#eb858c">风险信号</small><div style="font-size:28px;margin:12px 0;color:#eb858c">3</div><div style="color:#c4b1b1;font-size:11px">字段绑定冲突</div><div style="color:#c4b1b1;font-size:11px;margin-top:8px">准入案例待复核</div></div>
+      </div>
+      <div style="border:1px solid #26373d;padding:12px;margin-top:10px"><small style="color:#6dd3d1">近期趋势</small><div style="height:100px;margin-top:12px;background:linear-gradient(160deg,transparent 45%,#224149 46%,#224149 48%,transparent 49%),linear-gradient(20deg,transparent 49%,#5d9d91 50%,#5d9d91 52%,transparent 53%);border-bottom:1px solid #26373d"></div></div>
+    </div>
+    <div class="card-body"><h3>适合管理视角</h3><p>第一屏快速判断整体运行健康度和异常趋势。</p></div>
+  </div>
+</div>
