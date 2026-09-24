@@ -61,6 +61,10 @@ class HarnessWorkerService:
 
         task = claimed.task
         try:
+            initial_stage = HarnessStage(task.next_stage or HarnessStage.PREPARE_TASK.value)
+        except ValueError:
+            initial_stage = HarnessStage.PREPARE_TASK
+        try:
             result = await asyncio.wait_for(
                 self._workflow.run(
                     HarnessState(
@@ -73,14 +77,18 @@ class HarnessWorkerService:
                         versions=task.versions,
                         budget=task.budget,
                         attempt_count=task.attempt_count,
-                        stage=HarnessStage.PREPARE_TASK,
+                        stage=initial_stage,
+                        next_stage=task.next_stage,
+                        reason_code=task.retry_reason_code,
                     )
                 ),
                 timeout=task.budget.max_wall_time_seconds,
             )
         except HarnessError as exc:
             result = _failed_state(task, exc.code)
-        except (OSError, TimeoutError, ValueError):
+        except TimeoutError:
+            result = _failed_state(task, HarnessErrorCode.TIMEOUT)
+        except (OSError, ValueError):
             result = _failed_state(task, HarnessErrorCode.HARD_FAILURE)
 
         now = self._clock()
@@ -120,6 +128,10 @@ class HarnessWorkerService:
             lease_token=None,
             lease_expires_at=None,
             next_attempt_at=retry_at,
+            next_stage=result.next_stage if status is HarnessTaskStatus.PENDING else None,
+            retry_reason_code=(
+                result.reason_code if status is HarnessTaskStatus.PENDING else None
+            ),
         )
         persisted = await self._repository.update_task(
             updated,
@@ -190,18 +202,28 @@ class HarnessWorkerService:
 
 def _failed_state(task: HarnessTask, code: HarnessErrorCode) -> HarnessState:
     return HarnessState(
-            task_id=task.task_id,
-            tenant_id=task.tenant_id,
-            trace_id=task.trace_id,
-            repository_id=task.repository_id,
+        task_id=task.task_id,
+        tenant_id=task.tenant_id,
+        trace_id=task.trace_id,
+        repository_id=task.repository_id,
         snapshot_id=None,
         snapshot_revision=None,
         versions=task.versions,
         budget=task.budget,
         attempt_count=task.attempt_count,
         stage=HarnessStage.REPAIR_OR_FINISH,
-        status=HarnessTaskStatus.QUARANTINED,
+        status=(
+            HarnessTaskStatus.REPAIR_PENDING
+            if code is HarnessErrorCode.TIMEOUT
+            else HarnessTaskStatus.QUARANTINED
+        ),
         error_code=code,
+        next_stage=(
+            HarnessStage.RETRIEVE_CODE_CONTEXT.value
+            if code is HarnessErrorCode.TIMEOUT
+            else None
+        ),
+        reason_code=code,
     )
 
 

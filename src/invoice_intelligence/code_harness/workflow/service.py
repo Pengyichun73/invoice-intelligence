@@ -96,8 +96,13 @@ class HarnessWorkflowService:
                 HarnessStage.REPAIR_OR_FINISH,
                 status=HarnessTaskStatus.QUARANTINED,
                 error_code=HarnessErrorCode.BUDGET_EXHAUSTED,
+                reason_code=HarnessErrorCode.BUDGET_EXHAUSTED,
             )
-        return state.next(HarnessStage.INSPECT_REPOSITORY)
+        try:
+            stage = HarnessStage(state.next_stage) if state.next_stage else HarnessStage.INSPECT_REPOSITORY
+        except ValueError:
+            return self._fail(state, HarnessErrorCode.HARD_FAILURE)
+        return state.next(stage)
 
     async def _inspect_repository(self, state: HarnessState) -> HarnessState:
         source = self._dependencies.sources.get((state.tenant_id, state.repository_id))
@@ -127,7 +132,11 @@ class HarnessWorkflowService:
                 return self._fail(state, HarnessErrorCode.PARSER_NOT_CONFIGURED)
             with self._span(state, "inspect_repository", "parser"):
                 parsed = await self._dependencies.parser.parse(
+                    tenant_id=state.tenant_id,
+                    repository_id=state.repository_id,
                     snapshot_id=snapshot.snapshot_id,
+                    snapshot_revision=snapshot.revision,
+                    source_revision=snapshot.source_revision,
                     files=snapshot.files,
                     contents=contents,
                     versions=state.versions,
@@ -374,9 +383,12 @@ class HarnessWorkflowService:
             HarnessErrorCode.SANDBOX_UNAVAILABLE,
             HarnessErrorCode.PATH_OUTSIDE_REPOSITORY,
             HarnessErrorCode.RESOURCE_EXHAUSTED,
+            HarnessErrorCode.REPAIR_STALLED,
             HarnessErrorCode.TENANT_SCOPE_MISMATCH,
         }:
             outcome = WatchdogOutcome.HARD_FAILURE
+        elif state.error_code is HarnessErrorCode.TIMEOUT:
+            outcome = WatchdogOutcome.TIMEOUT
         elif same_patch and same_error:
             outcome = WatchdogOutcome.EXACT_REPEAT
         elif materially_changed:
@@ -409,6 +421,8 @@ class HarnessWorkflowService:
             HarnessStage.REPAIR_OR_FINISH,
             status=route.status,
             error_code=route.failure_code or state.error_code,
+            next_stage=route.next_stage,
+            reason_code=route.failure_code or state.error_code,
         )
 
     async def _repair_or_finish(self, state: HarnessState) -> HarnessState:
@@ -422,8 +436,14 @@ class HarnessWorkflowService:
             self._dependencies._patches.pop(state.task_id, None)
             self._dependencies._context_payloads.pop(state.task_id, None)
             return state
+        try:
+            next_stage = HarnessStage(
+                state.next_stage or HarnessStage.RETRIEVE_CODE_CONTEXT.value
+            )
+        except ValueError:
+            return self._fail(state, HarnessErrorCode.HARD_FAILURE)
         return state.next(
-            HarnessStage.RETRIEVE_CODE_CONTEXT,
+            next_stage,
             attempt_count=state.attempt_count + 1,
             status=HarnessTaskStatus.REPAIR_PENDING,
         )
@@ -448,6 +468,7 @@ class HarnessWorkflowService:
             else HarnessTaskStatus.REPAIR_PENDING,
             error_code=code,
             error_signature=signature,
+            reason_code=code,
             error_signatures=(*state.error_signatures, signature)[-state.budget.max_attempts :],
         )
 

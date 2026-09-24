@@ -33,6 +33,11 @@ class SnapshotCodeIndex:
     ) -> None:
         self._snapshot = snapshot
         self._contents = contents
+        for artifact in parsed:
+            for symbol in artifact.symbols:
+                _assert_code_scope(symbol, snapshot)
+            for edge in artifact.call_edges:
+                _assert_code_scope(edge, snapshot)
         self._symbols: tuple[_IndexedSymbol, ...] = tuple(
             _IndexedSymbol(symbol, contents.get(symbol.file_path, b"")[symbol.byte_range.start : symbol.byte_range.end])
             for artifact in parsed
@@ -167,6 +172,21 @@ def _assert_scope(scope: CodeIndexScope, snapshot: RepositorySnapshot) -> None:
     )
     if expected != actual:
         raise ValueError("code index scope does not match snapshot")
+
+
+def _assert_code_scope(
+    item: CodeSymbol | CallEdge,
+    snapshot: RepositorySnapshot,
+) -> None:
+    if (
+        item.tenant_id != snapshot.tenant_id
+        or item.repository_id != snapshot.repository_id
+        or item.snapshot_id != snapshot.snapshot_id
+        or item.snapshot_revision != snapshot.revision
+        or item.source_revision != snapshot.source_revision
+        or item.versions != snapshot.versions
+    ):
+        raise ValueError("parsed code scope does not match snapshot")
 
 
 def _hit(scope: CodeIndexScope, symbol: CodeSymbol) -> CodeIndexHit:

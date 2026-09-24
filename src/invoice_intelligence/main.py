@@ -22,7 +22,7 @@ from invoice_intelligence.bootstrap import (
 from invoice_intelligence.config.logging import configure_logging
 
 _container = build_container()
-configure_logging(_container.settings)
+configure_logging(_container.settings, component="api")
 
 
 @asynccontextmanager

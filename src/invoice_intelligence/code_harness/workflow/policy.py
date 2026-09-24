@@ -25,7 +25,6 @@ def route_after_watchdog(
     if observation.outcome in {
         WatchdogOutcome.HARD_FAILURE,
         WatchdogOutcome.STALL,
-        WatchdogOutcome.TIMEOUT,
         WatchdogOutcome.RESOURCE_EXHAUSTED,
     }:
         return RepairRoute(
@@ -39,4 +38,8 @@ def route_after_watchdog(
             None,
             HarnessErrorCode.BUDGET_EXHAUSTED,
         )
-    return RepairRoute(HarnessTaskStatus.REPAIR_PENDING, "retrieve_code_context", None)
+    return RepairRoute(
+        HarnessTaskStatus.REPAIR_PENDING,
+        "retrieve_code_context",
+        observation.failure_code,
+    )

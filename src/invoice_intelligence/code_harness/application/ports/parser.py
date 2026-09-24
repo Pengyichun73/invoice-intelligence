@@ -32,7 +32,11 @@ class CodeParser(Protocol):
     async def parse(
         self,
         *,
+        tenant_id: str,
+        repository_id: str,
         snapshot_id: str,
+        snapshot_revision: int,
+        source_revision: str,
         files: tuple[SnapshotFile, ...],
         contents: Mapping[str, bytes],
         versions: ExecutionVersionBinding,

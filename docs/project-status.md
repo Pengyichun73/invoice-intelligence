@@ -3,7 +3,7 @@
 本文是 Invoice Intelligence 当前实现进度的唯一状态基线。README、方案与架构文档描述设计和使用方式；
 当它们与本文的完成度判断冲突时，以本文和当前代码、migration 为准。
 
-状态核对日期：`2026-09-24`。
+状态核对日期：`2026-09-25`。
 
 ## 状态定义
 
@@ -22,15 +22,15 @@
 | OIDC/JWT、可信租户与 RBAC | 受限可用 | OIDC/JWT、TrustedTenantContext、权限策略和审计基础已实现；Training 四个端点已绑定 `training:submit`，生产部署仍受数据库凭据链路等缺口限制 |
 | Human Review Task Service | 完成 | 列表、详情、claim/release/reassign、lease 恢复、幂等提交、可信 Reviewer、跨租户 404 和 Workflow resume 已实现 |
 | 对象存储 | 受限可用 | Local 与 S3-compatible Adapter、HEAD/checksum/presigned URL、生命周期和迁移 Worker 已实现；生产 Compose 仍需容器连接及其余安全配置验收 |
-| 索引重建与投影 | 受限可用 | 两类 projection 已有 lease/fencing；激活门禁比对合格案例或字段目录源、PostgreSQL 投影与 Milvus ID/checksum；缺隔离 PostgreSQL 双 Worker 与真实 Milvus 验收 |
-| 离线评估 | 受限可用 | 诊断型 Snapshot Job、冻结数据集 Suite Job 与 Job→Run 续租/确认链、可选 HTTPS 隔离 Runner Adapter 已实现；缺远端评估服务、只读隔离证据与环境验收时 Suite Job 隔离，无 Stub 回退或晋升 |
+| 索引重建与投影 | 受限可用 | 两类 projection 已有 lease/fencing；激活门禁比对合格源、PostgreSQL 投影与 Milvus ID/checksum；双进程及真实隔离 Milvus 合成数据、恢复后新 Collection 重建与失配阻断验收通过，持续漂移和生产规模未验收 |
+| 离线评估 | 受限可用 | 诊断型 Snapshot Job、冻结 Suite Job、续租/确认链、HTTPS Adapter 与独立只读服务边界已实现；缺真实变体引擎、隔离证据快照与环境验收时 Suite Job 隔离，无 Stub 回退或晋升 |
 | Training Registry | 受限可用 | Registry、导出、产物、PostgreSQL claim/lease Worker、fail-closed Stub 和 MLflow-compatible Adapter 已实现；Training API 已绑定 RBAC，真实平台仍需显式凭据 |
 | 模型晋升与回滚 | 受限可用 | 客户端不能声明门禁事实；同租户 Evaluation/Artifact/Version 重载、审批 CAS 与有效历史目标回滚已实现；仅切换 PostgreSQL 注册状态，非真实部署 |
 | 财务 Domain | 受限可用 | AccountingCandidate、规则版本、汇率快照、posting proposal、幂等/CAS 和同租户完成 Run 校验已实现；仅提供 mock 外部财务 Adapter |
 | 交易分析 Domain | 受限可用 | 候选由同租户 completed Result 派生，审核采用幂等与 revision/CAS；历史不可信候选仅可审计升级为 escalated，规则仍为开发 Mock |
 | Code Generation and Self-Healing Harness | 部分实现 | 已有 Domain/Port、完整版本绑定、固定八阶段 Runner、Snapshot/结构化 Patch 校验、受控 create/delete Patch 契约、Python AST/结构化参数/精确检索适配器、caller/callee/dependency 结构化查询、Snapshot/Patch/Execution/Watchdog PostgreSQL 事实写入、Task/Postmortem/Repository Source Registry repository、Task/Attempt claim/lease fencing、通用 Worker、含 Repository/Snapshot/Task/Patch/Execution 来源的结构化 Postmortem source event、Postmortem 治理 Application/API、预算与可信 trace_id、共享隐私 Trace/低敏 Metrics Adapter、Grammar Registry、Harness API 和独立 Worker 入口、fail-closed Sandbox；Source Registry 注册/更新治理 API、运行时 reload、真实多语言 Parser、Code Model、代码 Milvus、MicroVM 和长期代码经验投影仍未完成 |
-| Docker Compose | 受限可用 | profile、volume、resource limit、liveness/readiness、runtime worker probe 和 `.dockerignore` 已配置；数据库 secret 容器连接及完整生产演练仍未完成 |
-| Observability 与 DLP | 受限可用 | 低基数 Worker/Provider/audit failure metrics、熔断计数和受控 `/metrics` 已实现；未接 Prometheus/Grafana、共享 Provider 配额、生产 DLP 或外部 Trace Collector |
+| Docker Compose | 受限可用 | profile、volume、resource limit、liveness/readiness、runtime worker probe 和 `.dockerignore` 已配置；原业务库已迁移至 `0044`，独立 project API/Index Worker 健康且重启恢复通过；旧项目服务名仍与工作树 Compose 不一致，原业务流量未切换 |
+| Observability 与 DLP | 受限可用 | 低基数 Worker/Provider/audit failure metrics、熔断计数、受控 `/metrics`、development 本地 JSONL 自动落盘/轮转与限长 Trace 诊断包入口已实现；未接 Prometheus/Grafana、共享 Provider 配额、生产 DLP 或外部 Trace Collector |
 
 ## 已完成主路径
 
@@ -52,19 +52,20 @@
 - 独立 Accounting Domain；识别结果不会直接入账，默认只连接 mock provider。
 - 开发基线脚本 `scripts/verify-dev-baseline.ps1` 已建立：在 development 环境检查本地可信租户、
   应用组合根导入和 Python 编译，不连接外部依赖；该检查不替代生产 Compose 或隔离环境验收。
-- Alembic 代码当前只有一个 head：`20260924_0041_code_harness_sources`；未对真实数据库执行迁移。
+- Alembic 源码和原业务库当前均为唯一 head：`20260924_0044_code_harness_repair_route`；索引验收专用库未被本次切换操作触及。
 
 ## 已知阻塞与风险
 
-1. Compose 中业务数据库 password file 已接入进程内 DSN 解析，但尚未进行容器内连接验证；不能仅凭配置证明生产可连接。
+1. 业务数据库 password file 已在原库 migration 与隔离 Compose API/Worker 验证；当前旧项目服务名与工作树 Compose 不一致，原业务 API/Worker 切换及完整生产连接仍未验证。
 2. Promotion 只切换 PostgreSQL 注册状态，不执行真实模型部署；真实 Suite 评估 Runner 与晋升 Worker 仍未实现。
 3. Transaction 规则仍为开发 Mock；历史客户端构造的候选与可信派生快照不一致时拒绝确认或驳回，授权 Reviewer 可审计升级，原候选仍不转成可信事实。
-4. `evaluation-worker` 与 `scheduler` 现与 API 使用同一业务 PostgreSQL 评估 Job queue；Suite Job 已冻结绑定并可选装配 HTTPS 隔离 Runner Adapter，但尚缺远端真实评估服务、只读隔离证据及 PostgreSQL 崩溃恢复验收。`training-worker` 是唯一训练执行入口，负责提交、刷新和取消，真实平台仍需显式凭据。
-5. Index projection 已具备 lease/retry 和清单比对代码，但尚未完成隔离 PostgreSQL 双 Worker 与真实 Milvus 全量完整性演练。
-6. Compose runtime probe 已检查配置、稳定 worker ID 和数据库连通性，但尚未在真实容器中演练。
+4. `evaluation-worker` 与 `scheduler` 现与 API 使用同一业务 PostgreSQL 评估 Job queue；Suite Job 已冻结绑定并可选装配 HTTPS 隔离 Runner Adapter，独立服务边界已实现，但尚缺真实变体引擎、只读隔离证据快照及 PostgreSQL 崩溃恢复验收。`training-worker` 是唯一训练执行入口，负责提交、刷新和取消，真实平台仍需显式凭据。
+5. Index projection 已在隔离恢复库与真实 Milvus 从合格源重建两类新 Collection，双进程、清单与 Alias 失配门禁验收通过；持续漂移监测与生产规模仍未验收。
+6. Compose runtime probe 已在隔离 API/Worker 容器核对 password file、稳定 worker ID 和数据库连通性；旧项目服务差异与缺少旧应用镜像仍阻止原业务流量切换。
 7. `/api/v1/ready` 只做安全配置 readiness，不代表 Milvus、对象存储或远程 Provider 已可用。
-8. 已新增隔离备份/恢复演练 runbook 和 dry-run helper；尚未实际执行恢复，因此 RPO/RTO、
-   容器 secret 连接和 Milvus 全量重建仍未验收。
+8. 隔离 Compose 的业务库、独立 PostgreSQL Checkpointer 和 MinIO 卷已从 SHA-256 校验归档
+   恢复；合成数据观察到丢失 0 条、恢复就绪 65.87 秒，Milvus 两类清单重建通过。
+   生产 RPO/RTO、Keycloak 可选分支、持续写入和生产规模仍未验收。
 9. 根目录已添加 Apache-2.0 `LICENSE`；版权主体为 `love-ovo73`，版权年份为 2026。
 
 ## 后续任务
@@ -78,9 +79,9 @@
 
 ### P1：后台任务闭环
 
-5. 提供并验收独立只读评估服务的全部变体实现、隔离证据读取与凭据；对续租、过期重领后的 Run fencing 执行真实 PostgreSQL 双 Worker 并发和数据泄漏演练。诊断型 Stub 报告不得充当晋升证据。
+5. 提供并验收独立服务的全部真实变体引擎、脱敏只读证据快照与凭据；对续租、过期重领后的 Run fencing 执行真实 PostgreSQL 双 Worker 并发和数据泄漏演练。诊断型 Stub 报告不得充当晋升证据。
 6. 核实并保留 `training-worker` 的单一执行路径；已移除误导性的 training-sync 占位 service。
-7. 对两类 index projection 进行隔离 PostgreSQL 双 Worker 与 Milvus 全量完整性验收。
+7. 对两类 index projection 继续验收长期容器实际队列、持续漂移监测与容量；隔离恢复重建及破坏注入基线见验收记录。
 
 ### P2：生产运维
 
@@ -101,12 +102,24 @@
 ## 本次盘点验证
 
 - 代码、路由、Repository、Worker、migration、配置和 Compose 均按实现读取，而非按命名判断。
-- 当前代码 Alembic revision 为单一 head：`20260924_0041_code_harness_sources`；本次未执行真实数据库迁移。
+- 当前代码 Alembic revision 为单一 head：`20260924_0044_code_harness_repair_route`；原业务库已于 2026-09-25 迁移至该 head，初始盘点时未迁移的叙述仅适用于此前阶段。
 - 使用 `.env.example` 补齐 Compose 变量后，`docker compose config --quiet` 可解析配置结构；这不代表服务可生产启动。
 - Ruff 只读检查结果为 99 个问题：44 `UP012`、30 `E501`、12 `UP046`、9 `UP035`、3 `UP040`、1 `UP047`；本轮选定的 `F401`、`F841`、`I001` 已清零。
 - 初始文档统一时未运行 pytest；后续各任务的定向验证见下方交付记录。未启动服务、未连接真实 Provider 或生产数据库。
 
 ## 后续交付记录
+
+- `2026-09-24`：P0 部署静态核对确认源码 Alembic 单一 head 为 `0044`；业务 PostgreSQL
+  password file 在 API、migration、Scheduler、Evaluation 与业务 Worker 中使用统一 Settings
+  解析路径。修正 preflight 对合法末尾换行的误拒绝，并使 Compose API/生命周期 Worker 的
+  S3 endpoint 可配置为 HTTPS，应用凭据可独立于 MinIO root secret 注入；S3 启动检查现拒绝
+  Principal 数组中的公开授权。
+  定向认证、凭据、队列、Worker health 与 S3 Policy 回归 `29 passed`；Compose 配置解析核对
+  10 个业务数据库消费者和 2 个 S3 消费者，Alembic `heads` 返回单一 `0044`，文档与 Ruff 检查通过。
+  `test_preflight.py` 的 pytest `tmp_path` 在本机因 WinError 5 无法运行，已用无文件系统依赖的
+  定向断言覆盖合法末尾换行、空值、多行与超长内容。
+  Docker daemon 当前不可连接，工作区仅有示例 secret；
+  容器内连接、实际 migration、OIDC/TLS、private Bucket、checksum 与生命周期尚未隔离验收。
 
 - `2026-09-24`：新增 `code_harness_sources` PostgreSQL 事实表、SQLAlchemy Repository 和
   Composition Root/Worker 装配；Harness Worker 启动时仅加载已启用的预登记 Source，缺少迁移、
@@ -230,6 +243,11 @@
   Pydantic/Domain 校验。聚合报告写入 PostgreSQL `evaluation_report_artifacts`；未提供远端
   评估服务、token 或隔离证据账户，默认继续隔离 Suite Job。MockTransport 与 Suite Job 定向
   回归 16 passed；真实远端及 PostgreSQL/Compose 验收未执行。
+- `2026-09-24`：新增独立 ASGI Evaluation Service 工厂与只读证据快照 Adapter；服务启动要求
+  全部 11 个变体引擎、token 文件和按租户登记的证据 SHA-256，运行时校验冻结清单、案例绑定及
+  脱敏证据内容。共享变体在请求中显式绑定 Suite；Worker Adapter 限制 `isolated://` 引用和响应大小。两套 Suite 全部变体的进程内契约测试
+  使用诊断型假引擎，仅证明边界，不产生 Promotion Evidence。真实引擎、快照、TLS 和独立部署
+  尚未提供，真实 Suite、PostgreSQL 双 Worker 与 Compose 验收未执行。
 - `2026-09-24`：新增 `20260924_0039_evaluation_report_artifacts`，将 JSON/Markdown 聚合报告
   以不可变内容和 SHA-256 保存到 PostgreSQL；Suite Job 完成与 Promotion Evidence 重载均
   校验 Run、tenant、schema、内容和引用顺序，缺失或篡改时 fail closed。评估绑定与晋升定向
@@ -239,11 +257,43 @@
   漂移或失配直接抛出持久化错误，阻止形成可晋升评估事实。评估完整性与相关回归共
   `30 passed`，新增测试 Ruff 通过；真实 PostgreSQL、隔离 Runner 与生产迁移仍未执行。
 
+- `2026-09-24`：在同一隔离 PostgreSQL 实例的专用库和真实隔离 Milvus 上，两个独立 Worker
+  进程完成 Reviewed Example 与 Field Semantic 并发投影；4 条合格案例和 19 条字段语义清单
+  的 ID/checksum/数量与 PostgreSQL 一致，拒绝状态案例未入索引。续租、过期重领、迟到
+  token fencing、失败重试与幂等通过。新版本缺项、额外项、错租户/版本及 checksum 篡改均阻断
+  激活，旧活动版本与旧 Milvus Alias 保留。实测修复 PyMilvus tuple upsert、集合初建时索引未就绪、fresh
+  Alembic 版本列长度以及 Docker 构建包元数据。定向测试 `17 passed`，Ruff 和编译通过；
+  命令、失败记录与剩余风险见 [`index-projection-acceptance-2026-09-24.md`](index-projection-acceptance-2026-09-24.md)。
+
+- `2026-09-25`：原业务库实际 `0031`、15 MB、79 张表，独立 PostgreSQL Checkpointer 约 8 MB；
+  业务库与 PostgreSQL Checkpointer custom-format 归档及当前 SQLite Checkpointer 文件已备份，
+  分别通过新数据库恢复或 SQLite integrity_check。原库归档恢复的两个独立数据库先后用挂载
+  migration 和固定 digest 镜像完成全部 13 个 revision 至 `0044`；关键事实计数不变、约束/索引
+  有效。迁移进程约 3 秒、整体命令约 7 秒；无并发写入，不能据此保证实际停机时长。
+  这是原库变更前的预演阶段；随后已按确认的命令迁移。旧应用镜像与 Compose 服务名差异仍是流量切换门禁。完整证据见
+  [`business-db-migration-preflight-2026-09-25.md`](business-db-migration-preflight-2026-09-25.md)。
+
+- `2026-09-25`：用户确认后，重新核对原库 `0031`、0 个其他会话及 0 个 processing 投影；
+  新备份经独立恢复校验后，固定镜像执行 13 个 revision 至真实 `0044`。96 张表，未验证约束和
+  无效索引均为 0；Reviewed Example 67、Review Task 13、Correction Event 4、对象 31、
+  Document 31、Extraction Run 31，均与迁移前一致；四组租户关联异常计数均为 0。
+  独立 Compose project 的 API/Index Worker、PostgreSQL、Milvus 均健康，API password file
+  临时表写入后回滚，数据库/API/Worker 重启后恢复健康。旧项目容器和 Alias 未切换；新环境无
+  合格投影队列，不能据此声称生产 claim/lease/fencing 与完整性已在长期容器重演。
+
+- `2026-09-25`：隔离故障恢复脚本修复 Checkpointer 漏备、固定服务/卷名、二进制 dump
+  管道和目标覆盖风险。新归档在独立 project 恢复业务库、4 表 1 条合成记录的 PostgreSQL
+  Checkpointer 与 2 个 MinIO 合成对象；Document 7、CorrectionEvent 2、ReviewedExample 5，
+  其中 4 条获准。恢复环境就绪 65.87 秒，观察到丢失 0 条；新 Milvus Collection 清单为
+  Reviewed Example 4/4、Field Semantic 19/19。删除下一版本条目后，新 Alias 激活被阻止，
+  合成旧 Alias 保留；原环境未触碰。可选 Keycloak 未启用，证据与风险见
+  [`backup-restore-acceptance-2026-09-25.md`](backup-restore-acceptance-2026-09-25.md)。
+
 ## 当前不得对外宣称
 
 - Docker Compose 已达到生产就绪。
 - 真实 Suite 变体评估已在隔离环境执行；默认 Worker 仍只自动运行诊断型 Stub 聚合。
 - 模型已自动晋升，或 Candidate 注册状态切换已实际修改部署流量/模型权重。
 - 交易分析规则已达到生产裁决能力，或历史客户端构造的候选已完成可信迁移。
-- 索引 Worker 已通过生产 PostgreSQL 双 Worker 和 Milvus 完整性验收。
+- 索引 Worker 已通过生产 PostgreSQL/Milvus 或生产规模与灾难恢复验收。
 - 已接入真实财务系统、真实远程训练平台或生产流量控制面。

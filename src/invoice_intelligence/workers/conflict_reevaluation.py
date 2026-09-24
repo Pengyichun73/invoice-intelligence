@@ -16,7 +16,7 @@ async def _run() -> None:
     dsn = settings.resolved_business_database_url.get_secret_value()
     if not dsn.startswith("postgresql+psycopg://"):
         raise RuntimeError("Conflict reevaluation requires PostgreSQL business storage")
-    configure_logging(settings)
+    configure_logging(settings, component="conflict-reevaluation")
     engine = create_business_engine(dsn)
     consumer = SQLAlchemyConflictReevaluationConsumer(engine)
     stop = asyncio.Event()

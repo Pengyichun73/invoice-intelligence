@@ -16,6 +16,8 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    if op.get_bind().dialect.name == "postgresql":
+        op.execute("ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(64)")
     op.add_column(
         "memory_conflict_reevaluation_requests",
         sa.Column("completed_at", sa.DateTime(timezone=True)),

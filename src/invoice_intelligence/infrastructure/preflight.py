@@ -72,10 +72,13 @@ def _password_file_check(settings: Any) -> str:
         return "absolute_readable_password_file_required"
     try:
         with value.open("r", encoding="utf-8") as source:
-            content = source.read()
+            content = source.read(4097)
     except (OSError, UnicodeError):
         return "absolute_readable_password_file_required"
-    if not content.strip() or any(character in content for character in "\x00\r\n"):
+    if len(content) > 4096:
+        return "absolute_readable_password_file_required"
+    password = content.rstrip("\r\n")
+    if not password or any(character in password for character in "\x00\r\n"):
         return "absolute_readable_password_file_required"
     return "ok"
 

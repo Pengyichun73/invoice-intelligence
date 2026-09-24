@@ -43,11 +43,14 @@ class ConfiguredEvaluationVariantExecutor:
         dataset: EvaluationDataset,
         variant: EvaluationVariant,
         bindings: EvaluationBindings,
+        suite: EvaluationSuite,
     ) -> Sequence[EvaluationCaseObservation]:
         try:
             runner = self._runners[variant]
         except KeyError as exc:
             raise ValueError("Offline evaluation variant runner is unavailable") from exc
+        if variant not in required_variants_for_suite(suite):
+            raise ValueError("Offline evaluation variant is outside the selected suite")
         semaphore = asyncio.Semaphore(self._maximum_concurrency)
 
         async def evaluate_case(case_index: int) -> EvaluationCaseObservation:
@@ -56,6 +59,7 @@ class ConfiguredEvaluationVariantExecutor:
                     dataset.cases[case_index],
                     dataset,
                     bindings,
+                    suite,
                 )
             if observation.variant is not variant:
                 raise ValueError("Evaluation runner returned the wrong variant identity")

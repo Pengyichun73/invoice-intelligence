@@ -41,7 +41,7 @@ async def _run() -> None:
     ):
         raise RuntimeError("Training Worker requires PostgreSQL business storage")
     container = build_container(settings)
-    configure_logging(settings)
+    configure_logging(settings, component="training")
     stop_event = asyncio.Event()
     _install_stop_handlers(stop_event)
     worker = TrainingWorkerService(

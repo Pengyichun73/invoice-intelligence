@@ -106,7 +106,7 @@ async def _run() -> None:
     if not settings.index_projection_worker_id:
         raise RuntimeError("index_projection_worker_id must be configured")
     container = build_container(settings)
-    configure_logging(settings)
+    configure_logging(settings, component="index-projection")
     stop_event = asyncio.Event()
     _install_stop_handlers(stop_event)
     try:

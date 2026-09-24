@@ -7,6 +7,7 @@ import socket
 
 from invoice_intelligence.application.services.storage_lifecycle import StorageLifecycleService
 from invoice_intelligence.bootstrap import build_container, close_application_container
+from invoice_intelligence.config.logging import configure_logging
 from invoice_intelligence.infrastructure.persistence.database import create_business_engine
 from invoice_intelligence.infrastructure.persistence.sqlalchemy_stored_objects import (
     SQLAlchemyStoredObjectRepository,
@@ -15,6 +16,7 @@ from invoice_intelligence.infrastructure.persistence.sqlalchemy_stored_objects i
 
 async def run() -> None:
     container = build_container()
+    configure_logging(container.settings, component="storage-lifecycle")
     engine = create_business_engine(
         container.settings.resolved_business_database_url.get_secret_value()
     )

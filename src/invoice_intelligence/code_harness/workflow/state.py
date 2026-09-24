@@ -1,6 +1,7 @@
 """Bounded state for the fixed Harness workflow."""
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 
 from ..domain.errors import HarnessErrorCode
@@ -46,6 +47,9 @@ class HarnessState:
     changed_ast_fingerprint: bool = False
     changed_symbols: bool = False
     changed_diagnostics: bool = False
+    next_stage: str | None = None
+    retry_at: datetime | None = None
+    reason_code: HarnessErrorCode | None = None
 
     def next(self, stage: HarnessStage, **changes: object) -> "HarnessState":
         values = {
@@ -73,6 +77,9 @@ class HarnessState:
             "changed_ast_fingerprint": self.changed_ast_fingerprint,
             "changed_symbols": self.changed_symbols,
             "changed_diagnostics": self.changed_diagnostics,
+            "next_stage": self.next_stage,
+            "retry_at": self.retry_at,
+            "reason_code": self.reason_code,
         }
         values.update(changes)
         return HarnessState(**values)

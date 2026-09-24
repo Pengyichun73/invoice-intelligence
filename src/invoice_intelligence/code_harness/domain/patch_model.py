@@ -34,8 +34,11 @@ class PatchOperation:
         if self.kind in {
             PatchOperationKind.INSERT_BEFORE,
             PatchOperationKind.INSERT_AFTER,
-        } and not self.anchor:
-            raise ValueError("anchored operations require an anchor")
+        }:
+            if not self.anchor:
+                raise ValueError("anchored operations require an anchor")
+            if self.start_byte != self.end_byte:
+                raise ValueError("insert operations require an empty byte range")
         if self.kind is PatchOperationKind.CREATE_FILE and (
             self.start_byte != 0 or self.end_byte != 0
         ):

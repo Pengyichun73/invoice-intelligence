@@ -3,6 +3,7 @@ name: invoice-intelligence
 x-business-db-env: &business-db-env
   INVOICE_INTELLIGENCE_BUSINESS_DATABASE_URL: "postgresql+psycopg://${POSTGRES_BUSINESS_USER:?set POSTGRES_BUSINESS_USER}@postgres:5432/${POSTGRES_BUSINESS_DB:?set POSTGRES_BUSINESS_DB}"
   INVOICE_INTELLIGENCE_BUSINESS_DATABASE_PASSWORD_FILE: /run/secrets/postgres_business_password
+  INVOICE_INTELLIGENCE_LOG_FILE_ENABLED: "${LOG_FILE_ENABLED:-true}"
 
 services:
   transaction-analysis-worker:
@@ -16,6 +17,7 @@ services:
       postgres:
         condition: service_healthy
     secrets: [postgres_business_password]
+    volumes: [./logs:/app/logs]
     healthcheck: {test: [CMD, python, -m, invoice_intelligence.workers.runtime_health], interval: 15s, timeout: 5s, retries: 3}
     deploy: {resources: {limits: {cpus: "1.0", memory: 512M}}}
 
@@ -63,13 +65,13 @@ services:
     environment:
       <<: *business-db-env
       INVOICE_INTELLIGENCE_FILE_STORAGE_BACKEND: ${FILE_STORAGE_BACKEND:-local}
-      INVOICE_INTELLIGENCE_OBJECT_STORAGE_ENDPOINT_URL: http://object-storage:9000
-      INVOICE_INTELLIGENCE_OBJECT_STORAGE_ACCESS_KEY: ${MINIO_ROOT_USER:-}
-      INVOICE_INTELLIGENCE_OBJECT_STORAGE_SECRET_KEY_FILE: /run/secrets/minio_root_password
+      INVOICE_INTELLIGENCE_OBJECT_STORAGE_ENDPOINT_URL: ${OBJECT_STORAGE_ENDPOINT_URL:-http://object-storage:9000}
+      INVOICE_INTELLIGENCE_OBJECT_STORAGE_ACCESS_KEY: ${OBJECT_STORAGE_APP_ACCESS_KEY:-${MINIO_ROOT_USER:-}}
+      INVOICE_INTELLIGENCE_OBJECT_STORAGE_SECRET_KEY_FILE: /run/secrets/object_storage_app_secret_key
     depends_on: {postgres: {condition: service_healthy}, migration: {condition: service_completed_successfully}}
-    secrets: [postgres_business_password, minio_root_password]
+    secrets: [postgres_business_password, object_storage_app_secret_key]
     ports: ["${API_PORT:-8000}:8000"]
-    volumes: [invoice_documents:/var/lib/invoice-intelligence/documents]
+    volumes: [invoice_documents:/var/lib/invoice-intelligence/documents, ./logs:/app/logs]
     healthcheck: {test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=2)"], interval: 10s, timeout: 5s, retries: 10, start_period: 20s}
     deploy: {resources: {limits: {cpus: "2.0", memory: 2G}}}
   memory-admission:
@@ -83,6 +85,7 @@ services:
       INVOICE_INTELLIGENCE_MEMORY_ADMISSION_WORKER_ID: "${MEMORY_ADMISSION_WORKER_ID:?set stable worker id}"
     depends_on: {postgres: {condition: service_healthy}, migration: {condition: service_completed_successfully}}
     secrets: [postgres_business_password]
+    volumes: [./logs:/app/logs]
     healthcheck: {test: [CMD, python, -m, invoice_intelligence.workers.runtime_health], interval: 15s, timeout: 5s, retries: 3}
     deploy: {resources: {limits: {cpus: "1.0", memory: 1G}}}
   conflict-reevaluation:
@@ -94,6 +97,7 @@ services:
     environment: *business-db-env
     depends_on: {postgres: {condition: service_healthy}, migration: {condition: service_completed_successfully}}
     secrets: [postgres_business_password]
+    volumes: [./logs:/app/logs]
     healthcheck: {test: [CMD, python, -m, invoice_intelligence.workers.runtime_health], interval: 15s, timeout: 5s, retries: 3}
     deploy: {resources: {limits: {cpus: "1.0", memory: 512M}}}
   index-rebuild:
@@ -108,6 +112,7 @@ services:
       INVOICE_INTELLIGENCE_INDEX_PROJECTION_WORKER_ID: "${INDEX_PROJECTION_WORKER_ID:?set stable worker id}"
     depends_on: {postgres: {condition: service_healthy}, migration: {condition: service_completed_successfully}}
     secrets: [postgres_business_password]
+    volumes: [./logs:/app/logs]
     healthcheck: {test: [CMD, python, -m, invoice_intelligence.workers.runtime_health, --worker-id-env, INVOICE_INTELLIGENCE_INDEX_PROJECTION_WORKER_ID], interval: 15s, timeout: 5s, retries: 3}
     deploy: {resources: {limits: {cpus: "1.0", memory: 1G}}}
   keycloak:
@@ -177,14 +182,14 @@ services:
     environment:
       <<: *business-db-env
       INVOICE_INTELLIGENCE_FILE_STORAGE_BACKEND: s3
-      INVOICE_INTELLIGENCE_OBJECT_STORAGE_ENDPOINT_URL: http://object-storage:9000
-      INVOICE_INTELLIGENCE_OBJECT_STORAGE_ACCESS_KEY: ${MINIO_ROOT_USER:?set minio user}
-      INVOICE_INTELLIGENCE_OBJECT_STORAGE_SECRET_KEY_FILE: /run/secrets/minio_root_password
+      INVOICE_INTELLIGENCE_OBJECT_STORAGE_ENDPOINT_URL: ${OBJECT_STORAGE_ENDPOINT_URL:-http://object-storage:9000}
+      INVOICE_INTELLIGENCE_OBJECT_STORAGE_ACCESS_KEY: ${OBJECT_STORAGE_APP_ACCESS_KEY:-${MINIO_ROOT_USER:?set minio user}}
+      INVOICE_INTELLIGENCE_OBJECT_STORAGE_SECRET_KEY_FILE: /run/secrets/object_storage_app_secret_key
     depends_on:
       postgres: {condition: service_healthy}
       migration: {condition: service_completed_successfully}
-      object-storage-init: {condition: service_completed_successfully}
-    secrets: [postgres_business_password, minio_root_password]
+    secrets: [postgres_business_password, object_storage_app_secret_key]
+    volumes: [./logs:/app/logs]
     healthcheck: {test: [CMD, python, -m, invoice_intelligence.workers.runtime_health], interval: 15s, timeout: 5s, retries: 3}
     deploy: {resources: {limits: {cpus: "1.0", memory: 512M}}}
   milvus:
@@ -228,6 +233,7 @@ services:
       INVOICE_INTELLIGENCE_EVALUATION_WORKER_ID: "${EVALUATION_WORKER_ID:?set stable worker id}"
     depends_on: {postgres: {condition: service_healthy}, migration: {condition: service_completed_successfully}}
     secrets: [postgres_business_password]
+    volumes: [./logs:/app/logs]
     healthcheck: {test: [CMD, python, -m, invoice_intelligence.workers.runtime_health, --worker-id-env, INVOICE_INTELLIGENCE_EVALUATION_WORKER_ID], interval: 15s, timeout: 5s, retries: 3}
     deploy: {resources: {limits: {cpus: "1.0", memory: 1G}}}
   scheduler:
@@ -241,6 +247,7 @@ services:
       INVOICE_INTELLIGENCE_SCHEDULER_WORKER_ID: "${SCHEDULER_WORKER_ID:?set stable worker id}"
     depends_on: {postgres: {condition: service_healthy}, migration: {condition: service_completed_successfully}}
     secrets: [postgres_business_password]
+    volumes: [./logs:/app/logs]
     healthcheck: {test: [CMD, python, -m, invoice_intelligence.workers.runtime_health, --worker-id-env, INVOICE_INTELLIGENCE_SCHEDULER_WORKER_ID], interval: 15s, timeout: 5s, retries: 3}
     deploy: {resources: {limits: {cpus: "1.0", memory: 512M}}}
   training-worker:
@@ -254,6 +261,7 @@ services:
       INVOICE_INTELLIGENCE_TRAINING_WORKER_ID: "${TRAINING_WORKER_ID:?set stable worker id}"
     depends_on: {postgres: {condition: service_healthy}, migration: {condition: service_completed_successfully}}
     secrets: [postgres_business_password]
+    volumes: [./logs:/app/logs]
     healthcheck: {test: [CMD, python, -m, invoice_intelligence.workers.runtime_health, --worker-id-env, INVOICE_INTELLIGENCE_TRAINING_WORKER_ID], interval: 15s, timeout: 5s, retries: 3}
     deploy: {resources: {limits: {cpus: "1.0", memory: 1G}}}
 secrets:
@@ -261,6 +269,8 @@ secrets:
   postgres_auth_password: {file: ./secrets/postgres_auth_password.txt}
   keycloak_admin_password: {file: ./secrets/keycloak_admin_password.txt}
   minio_root_password: {file: ./secrets/minio_root_password.txt}
+  object_storage_app_secret_key:
+    file: ${OBJECT_STORAGE_APP_SECRET_FILE:-./secrets/minio_root_password.txt}
 volumes:
   postgres_business_data:
   postgres_auth_data:

@@ -1,7 +1,8 @@
 # Docker Compose 部署
 
 > 当前状态：Compose profiles 可用于配置结构验证和开发编排，但尚未达到生产就绪。PostgreSQL
-> password secret 已通过统一 Settings 接入 API、migration 和 Worker，尚未在容器中做连接验证；
+> password secret 已通过统一 Settings 接入 API、migration 和 Worker，并在临时迁移容器连接原库
+> 备份副本；原业务库未升级，API/Worker 长期运行连接尚未验收；
 > `evaluation-worker`、`scheduler` 已接入业务 PostgreSQL 的评估 Job queue；`training-worker` 负责训练任务
 > 的提交、刷新和取消；model promotion worker 明确禁用。完整阻塞清单见
 > [`project-status.md`](project-status.md)。
@@ -33,8 +34,8 @@ Bucket 和最小权限凭据。
 
 `migration` 是一次性容器，成功后 API 和 Worker 才会启动。`index-rebuild` 已接入
 `lease_expires_at`、稳定 worker ID 和条件写入 fencing；需设置 `INDEX_PROJECTION_WORKER_ID`，
-并完成 `20260923_0034_index_lease` 迁移后启用。当前尚缺隔离 PostgreSQL 双 Worker 与真实 Milvus
-完整性演练，不能据此宣称生产就绪。评估 Job 由 API 登记在业务 PostgreSQL，
+并完成 `20260923_0034_index_lease` 迁移后启用。两类索引已完成隔离 PostgreSQL 双进程与真实 Milvus
+合成数据完整性验收，但长期运行服务和故障恢复尚未验收，不能据此宣称生产就绪。评估 Job 由 API 登记在业务 PostgreSQL，
 `evaluation-worker` 和 `scheduler` 使用相同的 password-file 解析路径领取任务；
 真实 Suite 所需隔离数据和证据读取尚未接入，不会将诊断型 Job 当作真实评估。
 `training-worker` 使用业务 PostgreSQL 的 Training Registry queue，并通过
@@ -46,7 +47,16 @@ Stub/远程 Adapter 执行提交、刷新和取消。调度必须由 PostgreSQL 
 连接到 PostgreSQL；Settings 在进程内组合密码，禁止同时在 URL 中提供明文密码。production
 必须配置可读的绝对路径 password file；development 可继续使用本地带凭据 DSN。`.env` 的
 `INVOICE_INTELLIGENCE_ENVIRONMENT` 由所有容器读取，API 不再强制 development。Checkpointer
-仍需单独数据库/DSN。当前未实际启动容器验证连接，不要把下列 `up` 命令解释为端到端可启动证明。
+仍需单独数据库/DSN。preflight 与 Settings 均接受 password file 的末尾换行；空值、内部换行与超长
+内容会被拒绝。生产 S3 endpoint 通过 `.env.compose` 的 `OBJECT_STORAGE_ENDPOINT_URL` 指向
+HTTPS 地址；示例值 `http://object-storage:9000` 仅用于开发 MinIO，生产 Settings 会拒绝 HTTP。
+应用凭据通过 `.env.compose` 的 `OBJECT_STORAGE_APP_ACCESS_KEY` 和
+`OBJECT_STORAGE_APP_SECRET_FILE` 单独配置；示例空值回退到开发 MinIO root 凭据，生产必须提供
+独立最小权限凭据文件，不能沿用该默认值。MinIO 服务自身仍使用 `minio_root_password`。
+生命周期 Worker 不依赖 MinIO 初始化容器，可单独对已配置的外部 S3 endpoint 运行；使用开发
+MinIO 时应先完成 `object-storage-init`，再启动 Worker。
+S3 启动校验会读取 ACL/Policy 并拒绝公开 Principal；仍需在隔离 S3 中验证实际权限与匿名访问。
+当前只验证临时迁移容器连接备份副本；不要把下列 `up` 命令解释为端到端可启动证明。
 MLflow 进程也必须同时获得 Access Key 与 Secret Key；
 现有配置未完成该凭据闭环。API 提供 `/api/v1/health`（liveness）和 `/api/v1/ready`
 （安全配置 readiness）；主要 Worker healthcheck 会通过 runtime probe 校验稳定 worker ID、
@@ -62,6 +72,11 @@ issuer/audience/JWKS、TLS 证书、S3/OSS endpoint/credentials、Milvus 脱敏�
 `LocalFileStorage`。LangSmith/PromptGenius 变量为空时不影响启动。
 
 ## 升级与回滚
+
+原业务库 `0031` 至唯一源码 head `0044` 的备份恢复、双副本预演与已确认切换记录见
+[`business-db-migration-preflight-2026-09-25.md`](business-db-migration-preflight-2026-09-25.md)。
+当前运行项目的 `postgres-business`/`postgres-checkpoint` 服务与工作树 Compose 的 `postgres`
+定义不一致；先解决此差异再使用下面的 Compose 升级命令。原业务库已迁移，但原业务 API/Worker 未切换。
 
 ```powershell
 docker compose --profile core pull

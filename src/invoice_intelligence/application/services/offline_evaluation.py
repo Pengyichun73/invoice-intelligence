@@ -203,6 +203,7 @@ class OfflineEvaluationService:
                     dataset,
                     variant,
                     request.bindings,
+                    request.suite,
                 )
                 observations = self._validate_observations(
                     dataset,

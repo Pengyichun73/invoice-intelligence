@@ -1,124 +1,263 @@
 [CmdletBinding()]
 param(
-    [ValidateSet("Plan", "Backup", "Restore")]
-    [string]$Action = "Plan",
-    [string]$ComposeProject = "invoice-intelligence-drill",
-    [string]$BackupDirectory = ".\artifacts\backup-drill",
-    [string]$RestoreProject = "",
+    [ValidateSet('Plan', 'Backup', 'Restore')][string]$Action = 'Plan',
+    [string]$ComposeProject = 'invoice-longrun-acceptance-20260925',
+    [string]$ComposeFile = '.\artifacts\longrun-acceptance-20260925\compose.yml',
+    [string]$BackupDirectory = '.\artifacts\backup-drill',
+    [string]$RestoreProject = '',
+    [string]$RestoreOverrideFile = '',
     [switch]$Execute
 )
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = 'Stop'
+$expectedDatabase = 'invoice_longrun_acceptance'
 
-function Invoke-DrillStep {
-    param(
-        [Parameter(Mandatory = $true)][string]$Description,
-        [Parameter(Mandatory = $true)][scriptblock]$Command
-    )
-    Write-Host "[drill] $Description"
-    if ($Execute) {
-        & $Command
-        if ($LASTEXITCODE -ne 0) {
-            throw "演练步骤失败：$Description"
+function Invoke-Docker {
+    param([string[]]$Arguments)
+    & docker @Arguments
+    if ($LASTEXITCODE -ne 0) { throw "Docker 命令失败：$($Arguments[0]) $($Arguments[1])" }
+}
+
+function Get-DockerText {
+    param([string[]]$Arguments)
+    $value = & docker @Arguments
+    if ($LASTEXITCODE -ne 0) { throw "Docker 读取失败：$($Arguments[0]) $($Arguments[1])" }
+    return ($value | Out-String).Trim()
+}
+
+function Assert-Project {
+    param([string]$Name, [string]$Prefix)
+    if (-not $Name.StartsWith($Prefix, [StringComparison]::Ordinal) -or
+        $Name -eq 'invoice-intelligence' -or $Name -match '[^a-z0-9-]') {
+        throw "拒绝非隔离 Compose project：$Name"
+    }
+}
+
+function Get-ServiceContainer {
+    param([string]$Project, [string]$Service, [string[]]$Files, [switch]$Optional)
+    $id = & docker compose @Files -p $Project ps -a -q $Service 2>$null
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace(($id | Out-String))) {
+        if ($Optional) { return $null }
+        throw "隔离 project 缺少服务：$Project/$Service"
+    }
+    $id = ($id | Out-String).Trim()
+    $owner = Get-DockerText -Arguments @('inspect', $id, '--format',
+        '{{index .Config.Labels "com.docker.compose.project"}}')
+    if ($owner -ne $Project) { throw "容器归属不符：$Service" }
+    return $id
+}
+
+function Get-ProjectVolume {
+    param([string]$Project, [string]$Service, [string]$Target, [string[]]$Files)
+    $id = Get-ServiceContainer $Project $Service $Files
+    $mounts = Get-DockerText -Arguments @('inspect', $id, '--format', '{{json .Mounts}}') |
+        ConvertFrom-Json
+    $mount = @($mounts | Where-Object { $_.Type -eq 'volume' -and $_.Destination -eq $Target })
+    if ($mount.Count -ne 1) { throw "卷挂载不唯一：$Service/$Target" }
+    $volume = $mount[0].Name
+    $labels = Get-DockerText -Arguments @('volume', 'inspect', $volume, '--format',
+        '{{json .Labels}}') | ConvertFrom-Json
+    if ($labels.'com.docker.compose.project' -ne $Project) { throw "卷归属不符：$volume" }
+    return $volume
+}
+
+function Save-Volume {
+    param([string]$Volume, [string]$Name, [string]$Directory)
+    Invoke-Docker -Arguments @('run', '--rm',
+        '--mount', "type=volume,source=$Volume,target=/source,readonly",
+        '--mount', "type=bind,source=$Directory,target=/backup",
+        'busybox:latest', 'tar', '-czf', "/backup/$Name", '-C', '/source', '.')
+}
+
+function Restore-Volume {
+    param([string]$Volume, [string]$Name, [string]$Directory)
+    Invoke-Docker -Arguments @('run', '--rm',
+        '--mount', "type=volume,source=$Volume,target=/target",
+        '--mount', "type=bind,source=$Directory,target=/backup,readonly",
+        'busybox:latest', 'sh', '-c',
+        "if find /target -mindepth 1 -maxdepth 1 | grep -q .; then exit 40; fi; tar -xzf /backup/$Name -C /target")
+}
+
+function Save-Database {
+    param([string]$Container, [string]$Path, [string]$Database, [string]$User)
+    $tmp = '/tmp/isolated-restore-drill.dump'
+    try {
+        Invoke-Docker -Arguments @('exec', $Container, 'pg_dump', '--format=custom',
+            '--no-owner', '--no-privileges', '-U', $User,
+            '-d', $Database, '-f', $tmp)
+        Invoke-Docker -Arguments @('cp', "${Container}:$tmp", $Path)
+    } finally {
+        & docker exec $Container rm -f $tmp *> $null
+    }
+}
+
+function Restore-Database {
+    param([string]$Container, [string]$Path, [string]$Database, [string]$User)
+    $tmp = '/tmp/isolated-restore-drill.dump'
+    try {
+        Invoke-Docker -Arguments @('cp', $Path, "${Container}:$tmp")
+        $null = Get-DockerText -Arguments @('exec', $Container, 'pg_restore', '--list', $tmp)
+        $count = Get-DockerText -Arguments @('exec', $Container, 'psql',
+            '-U', $User, '-d', $Database, '-At', '-c',
+            "select count(*) from information_schema.tables where table_schema='public'")
+        if ($count -ne '0') { throw "目标数据库非空，拒绝覆盖：$Database" }
+        Invoke-Docker -Arguments @('exec', $Container, 'pg_restore', '--exit-on-error',
+            '--no-owner', '--no-privileges', '-U', $User,
+            '-d', $Database, $tmp)
+    } finally {
+        & docker exec $Container rm -f $tmp *> $null
+    }
+}
+
+if ($Action -eq 'Plan') {
+    Write-Output '隔离计划：核对标签与目标空卷；冻结源写入；备份业务库、实际 Checkpointer、可选认证库及对象卷；校验 SHA-256；恢复到全新 project；核对事实与派生索引。'
+    return
+}
+if (-not $Execute) { throw 'Backup/Restore 必须显式提供 -Execute。' }
+Assert-Project $ComposeProject 'invoice-longrun-acceptance-'
+$resolvedComposeFile = [IO.Path]::GetFullPath($ComposeFile)
+if (-not (Test-Path -LiteralPath $resolvedComposeFile -PathType Leaf)) {
+    throw 'Compose 文件不存在。'
+}
+$sourceFiles = @('-f', $resolvedComposeFile)
+$directory = [IO.Path]::GetFullPath($BackupDirectory)
+$manifestPath = Join-Path $directory 'manifest.json'
+
+if ($Action -eq 'Backup') {
+    if (Test-Path -LiteralPath $manifestPath) { throw '备份目录已含 manifest，拒绝覆盖。' }
+    New-Item -ItemType Directory -Force -Path $directory | Out-Null
+    $business = Get-ServiceContainer $ComposeProject 'postgres' $sourceFiles
+    $api = Get-ServiceContainer $ComposeProject 'api' $sourceFiles
+    $backend = Get-DockerText -Arguments @('exec', $api, 'printenv',
+        'INVOICE_INTELLIGENCE_CHECKPOINT_BACKEND')
+    $database = Get-DockerText -Arguments @('exec', $business, 'printenv', 'POSTGRES_DB')
+    if ($database -ne $expectedDatabase) { throw '业务数据库不是隔离验收库。' }
+    $checkpoint = $null
+    if ($backend -eq 'postgres') {
+        $checkpoint = Get-ServiceContainer $ComposeProject 'postgres-checkpoint' $sourceFiles
+    } elseif ($backend -ne 'sqlite') {
+        throw "不支持的 Checkpointer：$backend"
+    }
+    $auth = Get-ServiceContainer $ComposeProject 'postgres-auth' $sourceFiles -Optional
+    $objectVolume = Get-ProjectVolume $ComposeProject 'minio' '/data' $sourceFiles
+    $checkpointVolume = if ($backend -eq 'sqlite') {
+        Get-ProjectVolume $ComposeProject 'api' '/app/.data' $sourceFiles
+    } else { $null }
+    $head = Get-DockerText -Arguments @('exec', $business, 'psql',
+        '-U', 'invoice_intelligence', '-d', $expectedDatabase, '-At',
+        '-c', 'select version_num from alembic_version')
+    $frozenAt = [DateTime]::UtcNow
+    try {
+        Invoke-Docker -Arguments (@('compose') + $sourceFiles + @('-p', $ComposeProject,
+            'stop', 'api', 'index-worker', 'milvus', 'minio'))
+        Save-Database $business (Join-Path $directory 'business.dump') $expectedDatabase 'invoice_intelligence'
+        if ($checkpoint) {
+            $checkpointDb = Get-DockerText -Arguments @('exec', $checkpoint,
+                'printenv', 'POSTGRES_DB')
+            $checkpointUser = Get-DockerText -Arguments @('exec', $checkpoint,
+                'printenv', 'POSTGRES_USER')
+            Save-Database $checkpoint (Join-Path $directory 'checkpoint.dump') $checkpointDb $checkpointUser
+        } else {
+            Invoke-Docker -Arguments @('run', '--rm', '--mount',
+                "type=volume,source=$checkpointVolume,target=/source,readonly",
+                'busybox:latest', 'test', '-s', '/source/checkpoints.sqlite')
+            Save-Volume $checkpointVolume 'checkpoint-volume.tgz' $directory
         }
-    } else {
-        Write-Host "        dry-run（未执行）"
+        if ($auth) {
+            $authDb = Get-DockerText -Arguments @('exec', $auth, 'printenv', 'POSTGRES_DB')
+            $authUser = Get-DockerText -Arguments @('exec', $auth, 'printenv', 'POSTGRES_USER')
+            Save-Database $auth (Join-Path $directory 'keycloak.dump') $authDb $authUser
+        }
+        Save-Volume $objectVolume 'object-storage.tgz' $directory
+    } finally {
+        Invoke-Docker -Arguments (@('compose') + $sourceFiles + @('-p', $ComposeProject,
+            'start', 'minio', 'milvus', 'api', 'index-worker'))
     }
-}
-
-if ($Action -ne "Plan" -and -not $Execute) {
-    throw "Backup/Restore 必须显式提供 -Execute；默认只生成计划。"
-}
-
-$resolvedBackupDirectory = [System.IO.Path]::GetFullPath($BackupDirectory)
-New-Item -ItemType Directory -Force -Path $resolvedBackupDirectory | Out-Null
-
-if ($Action -eq "Plan") {
-    Write-Host "隔离恢复演练计划（不连接服务、不执行迁移、不修改卷）"
-    Write-Host "1. 备份业务 PostgreSQL、独立 Checkpointer、Keycloak PostgreSQL（如启用）。"
-    Write-Host "2. 备份对象存储卷并生成 SHA-256 manifest。"
-    Write-Host "3. 在新的 Compose project/volume 恢复，校验 migration head、checksum 和租户隔离。"
-    Write-Host "4. 从 PostgreSQL approved/index projection facts 注册新 Milvus Collection。"
-    Write-Host "5. 完整 project/verify 后，才由授权 API 显式 activate Alias。"
-    Write-Host "6. 任一步骤失败，保留旧 Alias 和旧环境，不执行 destructive cleanup。"
-    exit 0
-}
-
-$manifestPath = Join-Path $resolvedBackupDirectory "manifest.json"
-$businessDump = Join-Path $resolvedBackupDirectory "business.dump"
-$authDump = Join-Path $resolvedBackupDirectory "keycloak.dump"
-$objectArchive = Join-Path $resolvedBackupDirectory "object-storage.tgz"
-
-if ($Action -eq "Backup") {
-    Invoke-DrillStep "备份业务 PostgreSQL（custom format）" {
-        docker compose -p $ComposeProject --profile core exec -T postgres `
-            sh -c 'pg_dump --format=custom --no-owner --no-privileges -U "$POSTGRES_USER" "$POSTGRES_DB"' `
-            > $businessDump
+    $names = @('business.dump', 'object-storage.tgz')
+    $names += if ($checkpoint) { 'checkpoint.dump' } else { 'checkpoint-volume.tgz' }
+    if ($auth) { $names += 'keycloak.dump' }
+    $hashes = [ordered]@{}
+    foreach ($name in $names) {
+        $filePath = Join-Path $directory $name
+        $hashes[$name] = (Get-FileHash -Algorithm SHA256 -LiteralPath $filePath).Hash
     }
-
-    Invoke-DrillStep "备份 Keycloak PostgreSQL（如 auth profile 已启用）" {
-        docker compose -p $ComposeProject --profile auth exec -T postgres-auth `
-            sh -c 'pg_dump --format=custom --no-owner --no-privileges -U "$POSTGRES_USER" "$POSTGRES_DB"' `
-            > $authDump
-    }
-
-    Invoke-DrillStep "归档对象存储卷并生成 checksum" {
-        docker run --rm `
-            -v "${ComposeProject}_object_storage_data:/data:ro" `
-            -v "${resolvedBackupDirectory}:/backup" `
-            alpine sh -c 'tar czf /backup/object-storage.tgz -C /data . && sha256sum /backup/object-storage.tgz > /backup/object-storage.tgz.sha256'
-    }
-
-    $manifest = [ordered]@{
-        created_at_utc = [DateTime]::UtcNow.ToString("o")
+    [ordered]@{
+        created_at_utc = [DateTime]::UtcNow.ToString('o')
+        frozen_at_utc = $frozenAt.ToString('o')
         compose_project = $ComposeProject
-        business_dump = [IO.Path]::GetFileName($businessDump)
-        auth_dump = if (Test-Path $authDump) { [IO.Path]::GetFileName($authDump) } else { $null }
-        object_archive = [IO.Path]::GetFileName($objectArchive)
-        notes = @(
-            "凭据仅由容器 secret/环境注入，manifest 不保存 DSN、Token 或密码。",
-            "Milvus/etcd 不作为事实源；恢复后从 PostgreSQL 重建。"
-        )
-    }
-    $manifest | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 -Path $manifestPath
-    Write-Host "备份 manifest：$manifestPath"
-    exit 0
+        business_database = $expectedDatabase
+        alembic_head = $head
+        checkpoint_backend = $backend
+        auth_enabled = [bool]$auth
+        files_sha256 = $hashes
+    } | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 -LiteralPath $manifestPath
+    Write-Output "隔离备份完成：$manifestPath"
+    return
 }
 
-if ([string]::IsNullOrWhiteSpace($RestoreProject)) {
-    throw "Restore 必须指定隔离的 -RestoreProject，避免覆盖原 Compose project。"
+Assert-Project $RestoreProject 'invoice-restore-'
+if (-not $RestoreOverrideFile) { throw 'Restore 必须提供独立端口覆盖文件。' }
+if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+    throw '缺少备份 manifest。'
 }
-if ($RestoreProject -eq $ComposeProject) {
-    throw "RestoreProject 必须与 ComposeProject 不同。"
+$manifest = Get-Content -Raw -Encoding utf8 -LiteralPath $manifestPath | ConvertFrom-Json
+if ($manifest.compose_project -ne $ComposeProject -or
+    $manifest.business_database -ne $expectedDatabase) {
+    throw '备份来源不匹配。'
 }
-if (-not (Test-Path $businessDump)) {
-    throw "缺少业务备份：$businessDump"
-}
-
-Invoke-DrillStep "在隔离 project 中恢复业务 PostgreSQL" {
-    Get-Content -AsByteStream -Raw -Path $businessDump |
-        docker compose -p $RestoreProject --profile core exec -T postgres `
-            sh -c 'pg_restore --clean --if-exists --exit-on-error -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
-}
-
-if (Test-Path $authDump) {
-    Invoke-DrillStep "在隔离 project 中恢复 Keycloak PostgreSQL" {
-        Get-Content -AsByteStream -Raw -Path $authDump |
-            docker compose -p $RestoreProject --profile auth exec -T postgres-auth `
-                sh -c 'pg_restore --clean --if-exists --exit-on-error -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+foreach ($entry in $manifest.files_sha256.PSObject.Properties) {
+    $file = Join-Path $directory $entry.Name
+    if (-not (Test-Path -LiteralPath $file -PathType Leaf) -or
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash -ne $entry.Value) {
+        throw "备份 checksum 不匹配：$($entry.Name)"
     }
 }
-
-Invoke-DrillStep "恢复对象存储卷并校验归档 checksum" {
-    docker run --rm `
-        -v "${RestoreProject}_object_storage_data:/data" `
-        -v "${resolvedBackupDirectory}:/backup:ro" `
-        alpine sh -c 'sha256sum -c /backup/object-storage.tgz.sha256 && tar xzf /backup/object-storage.tgz -C /data'
+$existing = Get-DockerText -Arguments @('ps', '-aq', '--filter',
+    "label=com.docker.compose.project=$RestoreProject")
+$existingVolumes = Get-DockerText -Arguments @('volume', 'ls', '-q', '--filter',
+    "label=com.docker.compose.project=$RestoreProject")
+if ($existing -or $existingVolumes) { throw '目标 project 或卷已存在，拒绝覆盖。' }
+$restoreFiles = $sourceFiles
+if ($RestoreOverrideFile) {
+    $override = [IO.Path]::GetFullPath($RestoreOverrideFile)
+    if (-not (Test-Path -LiteralPath $override -PathType Leaf)) { throw '恢复覆盖文件不存在。' }
+    $restoreFiles += @('-f', $override)
 }
-
-Write-Host "恢复后人工/受控校验："
-Write-Host "- alembic current 与预期 head 一致；不回滚 migration。"
-Write-Host "- StoredObject checksum、租户归属、审核事实和 CorrectionEvent 数量/抽样一致。"
-Write-Host "- 从 PostgreSQL approved + reviewed + valid facts 注册新 Milvus Collection。"
-Write-Host "- project/verify 全部通过后，由授权 API 显式 activate Alias；失败则保持旧 Alias。"
-Write-Host "- 记录 RPO、RTO、校验结果和失败恢复步骤；不得执行 down -v。"
+$restoreStart = [DateTime]::UtcNow
+Invoke-Docker -Arguments (@('compose') + $restoreFiles + @('-p', $RestoreProject,
+    'up', '-d', '--wait', 'postgres'))
+Invoke-Docker -Arguments (@('compose') + $restoreFiles + @('-p', $RestoreProject,
+    'create', 'minio', 'api'))
+$targetBusiness = Get-ServiceContainer $RestoreProject 'postgres' $restoreFiles
+$targetDb = Get-DockerText -Arguments @('exec', $targetBusiness, 'printenv', 'POSTGRES_DB')
+if ($targetDb -ne $expectedDatabase) { throw '目标数据库不是隔离验收库。' }
+Restore-Database $targetBusiness (Join-Path $directory 'business.dump') $expectedDatabase 'invoice_intelligence'
+if ($manifest.checkpoint_backend -eq 'sqlite') {
+    $volume = Get-ProjectVolume $RestoreProject 'api' '/app/.data' $restoreFiles
+    Restore-Volume $volume 'checkpoint-volume.tgz' $directory
+} elseif ($manifest.checkpoint_backend -eq 'postgres') {
+    Invoke-Docker -Arguments (@('compose') + $restoreFiles + @('-p', $RestoreProject,
+        'up', '-d', '--wait', 'postgres-checkpoint'))
+    $target = Get-ServiceContainer $RestoreProject 'postgres-checkpoint' $restoreFiles
+    $db = Get-DockerText -Arguments @('exec', $target, 'printenv', 'POSTGRES_DB')
+    $user = Get-DockerText -Arguments @('exec', $target, 'printenv', 'POSTGRES_USER')
+    Restore-Database $target (Join-Path $directory 'checkpoint.dump') $db $user
+} else { throw '未知 Checkpointer backend。' }
+if ($manifest.auth_enabled) {
+    Invoke-Docker -Arguments (@('compose') + $restoreFiles + @('-p', $RestoreProject,
+        'up', '-d', '--wait', 'postgres-auth'))
+    $target = Get-ServiceContainer $RestoreProject 'postgres-auth' $restoreFiles
+    $db = Get-DockerText -Arguments @('exec', $target, 'printenv', 'POSTGRES_DB')
+    $user = Get-DockerText -Arguments @('exec', $target, 'printenv', 'POSTGRES_USER')
+    Restore-Database $target (Join-Path $directory 'keycloak.dump') $db $user
+}
+$volume = Get-ProjectVolume $RestoreProject 'minio' '/data' $restoreFiles
+Restore-Volume $volume 'object-storage.tgz' $directory
+Invoke-Docker -Arguments (@('compose') + $restoreFiles + @('-p', $RestoreProject,
+    'up', '-d', '--wait'))
+$restoredHead = Get-DockerText -Arguments @('exec', $targetBusiness, 'psql',
+    '-U', 'invoice_intelligence', '-d', $expectedDatabase, '-At',
+    '-c', 'select version_num from alembic_version')
+if ($restoredHead -ne $manifest.alembic_head) { throw '恢复后 Alembic head 不匹配。' }
+$rto = ([DateTime]::UtcNow - $restoreStart).TotalSeconds
+Write-Output "隔离恢复完成：project=$RestoreProject head=$restoredHead RTO_seconds=$([math]::Round($rto, 2))"

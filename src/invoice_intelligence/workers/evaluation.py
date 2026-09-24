@@ -5,6 +5,7 @@ import os
 import signal
 
 from invoice_intelligence.bootstrap import build_evaluation_worker_service
+from invoice_intelligence.config.logging import configure_logging
 from invoice_intelligence.config.settings import get_settings
 from invoice_intelligence.infrastructure.observability.metrics import (
     get_metrics_registry,
@@ -16,12 +17,14 @@ from invoice_intelligence.workers.evaluation_queue_database import (
 
 
 async def _run() -> None:
+    settings = get_settings()
+    configure_logging(settings, component="evaluation")
     dsn = evaluation_queue_database_url()
     worker_id = os.environ.get("INVOICE_INTELLIGENCE_EVALUATION_WORKER_ID", "").strip()
     if not worker_id:
         raise RuntimeError("Evaluation Worker requires a stable worker ID")
     engine = create_business_engine(dsn)
-    service, repository = build_evaluation_worker_service(engine, get_settings())
+    service, repository = build_evaluation_worker_service(engine, settings)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for signum in (signal.SIGINT, getattr(signal, "SIGTERM", signal.SIGINT)):

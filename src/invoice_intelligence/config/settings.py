@@ -239,6 +239,11 @@ class Settings(BaseSettings):
     oidc_tls_verify: bool = True
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     log_json: bool = True
+    log_file_enabled: bool | None = None
+    log_directory: Path = Path("logs")
+    log_file_max_bytes: int = Field(default=20_000_000, ge=1_000_000, le=100_000_000)
+    log_file_backup_count: int = Field(default=5, ge=1, le=20)
+    log_file_retention_days: int = Field(default=7, ge=1, le=365)
     api_prefix: str = "/api/v1"
     docs_enabled: bool = True
     metrics_endpoint_enabled: bool = False

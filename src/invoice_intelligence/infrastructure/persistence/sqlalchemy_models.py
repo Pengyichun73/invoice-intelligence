@@ -3387,6 +3387,8 @@ class CodeHarnessTaskRow(Base):
     versions_json: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False)
     budget_json: Mapped[dict[str, int]] = mapped_column(JSON, nullable=False)
     failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    next_stage: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    retry_reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     worker_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     lease_token: Mapped[str | None] = mapped_column(String(128), nullable=True)

@@ -5,6 +5,8 @@ import os
 import signal
 from datetime import UTC, datetime
 
+from invoice_intelligence.config.logging import configure_logging
+from invoice_intelligence.config.settings import get_settings
 from invoice_intelligence.infrastructure.persistence.database import create_business_engine
 from invoice_intelligence.infrastructure.persistence.sqlalchemy_evaluation_jobs import (
     SQLAlchemyEvaluationJobRepository,
@@ -15,6 +17,7 @@ from invoice_intelligence.workers.evaluation_queue_database import (
 
 
 async def _run() -> None:
+    configure_logging(get_settings(), component="scheduler")
     dsn = evaluation_queue_database_url()
     worker_id = os.environ.get("INVOICE_INTELLIGENCE_SCHEDULER_WORKER_ID", "").strip()
     if not worker_id:

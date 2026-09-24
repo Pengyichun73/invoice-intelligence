@@ -98,6 +98,8 @@ class RepositoryInspectionService:
                 relative = path.relative_to(root).as_posix()
                 if relative.startswith(".git/") or relative == ".git":
                     continue
+                if _is_sensitive_path(relative):
+                    continue
                 before = path.stat()
                 if before.st_size > self._max_file_bytes:
                     continue
@@ -124,7 +126,7 @@ class RepositoryInspectionService:
                         mode=after.st_mode,
                     )
                 )
-            if stable:
+            if stable and _candidate_paths(root, self._max_file_bytes) == set(contents):
                 return files, contents
             if attempt < self._max_capture_retries:
                 sleep(0)
@@ -159,3 +161,41 @@ def _is_probably_text(path: str, data: bytes) -> bool:
     except UnicodeDecodeError:
         return False
     return True
+
+
+def _candidate_paths(root: Path, max_file_bytes: int) -> set[str]:
+    candidates: set[str] = set()
+    for path in root.rglob("*"):
+        if path.is_symlink() or not path.is_file():
+            continue
+        relative = path.relative_to(root).as_posix()
+        if relative.startswith(".git/") or relative == ".git":
+            continue
+        if _is_sensitive_path(relative):
+            continue
+        if path.stat().st_size > max_file_bytes:
+            continue
+        resolved = path.resolve()
+        if root not in resolved.parents:
+            raise HarnessError(HarnessErrorCode.PATH_OUTSIDE_REPOSITORY)
+        candidates.add(relative)
+    return candidates
+
+
+def _is_sensitive_path(path: str) -> bool:
+    normalized = path.lower().replace("\\", "/")
+    name = normalized.rsplit("/", 1)[-1]
+    if name.startswith(".env") or name in {
+        ".npmrc",
+        ".pypirc",
+        "credentials",
+        "credentials.json",
+        "secrets",
+        "secrets.json",
+        "id_rsa",
+        "id_dsa",
+        "known_hosts",
+        "dockerconfig.json",
+    }:
+        return True
+    return name.endswith((".pem", ".key", ".p12", ".pfx", ".jks"))

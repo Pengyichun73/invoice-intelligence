@@ -7,7 +7,7 @@ name = "invoice-intelligence"
 version = "0.1.0"
 description = "Deterministic invoice and image extraction workflow with human review and correction memory."
 readme = "README.md"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.12,<3.13"
 dependencies = [

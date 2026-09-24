@@ -64,6 +64,8 @@ class HarnessTask:
     lease_expires_at: datetime | None = None
     next_attempt_at: datetime | None = None
     trace_id: str | None = None
+    next_stage: str | None = None
+    retry_reason_code: HarnessErrorCode | None = None
 
     def __post_init__(self) -> None:
         for name in ("task_id", "tenant_id", "repository_id", "request_fingerprint"):
@@ -79,6 +81,10 @@ class HarnessTask:
             self.next_attempt_at.tzinfo is None or self.next_attempt_at.utcoffset() is None
         ):
             raise ValueError("next_attempt_at must be timezone-aware")
+        if self.next_stage is not None:
+            require_text("next_stage", self.next_stage, max_length=64)
+        if self.retry_reason_code is not None:
+            require_text("retry_reason_code", self.retry_reason_code.value, max_length=64)
         if self.updated_at < self.created_at:
             raise ValueError("updated_at cannot precede created_at")
         if self.status in TERMINAL_TASK_STATUSES and self.failure_code is None and (

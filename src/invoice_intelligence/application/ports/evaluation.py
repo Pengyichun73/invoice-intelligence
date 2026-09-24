@@ -9,6 +9,7 @@ from invoice_intelligence.domain.evaluation import (
     EvaluationCaseObservation,
     EvaluationDataset,
     EvaluationRun,
+    EvaluationSuite,
     EvaluationVariant,
 )
 
@@ -58,6 +59,7 @@ class EvaluationVariantRunner(Protocol):
         case: EvaluationCase,
         dataset: EvaluationDataset,
         bindings: EvaluationBindings,
+        suite: EvaluationSuite,
     ) -> EvaluationCaseObservation:
         """Return retrieval, extraction, admission, and/or binding observations."""
 
@@ -72,6 +74,7 @@ class EvaluationVariantExecutor(Protocol):
         dataset: EvaluationDataset,
         variant: EvaluationVariant,
         bindings: EvaluationBindings,
+        suite: EvaluationSuite,
     ) -> Sequence[EvaluationCaseObservation]:
         """Return exactly one observation per case without changing production state."""
 

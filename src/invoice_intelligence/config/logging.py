@@ -2,11 +2,44 @@
 
 import json
 import logging
+import os
+import re
+import time
 from datetime import UTC, datetime
 from logging.config import dictConfig
+from pathlib import Path
 from typing import Any
 
-from invoice_intelligence.config.settings import Settings
+from invoice_intelligence.config.settings import Environment, Settings
+
+_COMPONENT_NAME = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+
+
+def _process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _prune_stale_files(directory: Path, component: str, retention_days: int) -> None:
+    """Remove only old files from stopped processes in this component directory."""
+    filename = re.compile(rf"^{re.escape(component)}-(\d+)\.jsonl(?:\.\d+)?$")
+    cutoff = time.time() - retention_days * 86_400
+    for path in directory.iterdir():
+        match = filename.fullmatch(path.name)
+        if match is None or not path.is_file():
+            continue
+        try:
+            if path.stat().st_mtime < cutoff and not _process_alive(int(match.group(1))):
+                path.unlink()
+        except OSError:
+            continue
 
 _SAFE_EXTRA_FIELDS = (
     "provider",
@@ -91,7 +124,7 @@ class JsonFormatter(logging.Formatter):
         """Serialize a log record as one JSON object."""
 
         payload: dict[str, Any] = {
-            "timestamp": datetime.now(UTC).isoformat(),
+            "timestamp": datetime.fromtimestamp(record.created, UTC).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": _safe_message(record),
@@ -100,7 +133,7 @@ class JsonFormatter(logging.Formatter):
             value = getattr(record, field_name, None)
             if value is not None:
                 payload[field_name] = value
-        if record.exc_info:
+        if record.exc_info and record.exc_info[0] is not None:
             payload["exception_type"] = record.exc_info[0].__name__
         try:
             from invoice_intelligence.infrastructure.observability.trace import (
@@ -129,18 +162,46 @@ class SafeTextFormatter(logging.Formatter):
         except ImportError:
             pass
         suffix = f" {fields}" if fields else ""
-        if record.exc_info:
+        if record.exc_info and record.exc_info[0] is not None:
             suffix += f" exception_type={record.exc_info[0].__name__}"
         return (
-            f"{datetime.now(UTC).isoformat()} {record.levelname} "
+            f"{datetime.fromtimestamp(record.created, UTC).isoformat()} {record.levelname} "
             f"{record.name} {_safe_message(record)}{suffix}"
         )
 
 
-def configure_logging(settings: Settings) -> None:
+def configure_logging(settings: Settings, *, component: str = "api") -> None:
     """Configure process logging from immutable settings."""
 
     formatter_name = "json" if settings.log_json else "text"
+    file_enabled = (
+        settings.log_file_enabled
+        if settings.log_file_enabled is not None
+        else settings.environment is Environment.DEVELOPMENT
+    )
+    handlers: dict[str, dict[str, object]] = {
+        "default": {
+            "class": "logging.StreamHandler",
+            "formatter": formatter_name,
+            "stream": "ext://sys.stdout",
+        },
+    }
+    root_handlers = ["default"]
+    if file_enabled:
+        if not _COMPONENT_NAME.fullmatch(component):
+            raise ValueError("Invalid logging component name")
+        log_dir = settings.log_directory.expanduser().resolve() / component
+        log_dir.mkdir(parents=True, exist_ok=True)
+        _prune_stale_files(log_dir, component, settings.log_file_retention_days)
+        handlers["file"] = {
+            "class": "logging.handlers.RotatingFileHandler",
+            "formatter": "json",
+            "filename": str(log_dir / f"{component}-{os.getpid()}.jsonl"),
+            "maxBytes": settings.log_file_max_bytes,
+            "backupCount": settings.log_file_backup_count,
+            "encoding": "utf-8",
+        }
+        root_handlers.append("file")
     dictConfig(
         {
             "version": 1,
@@ -149,15 +210,9 @@ def configure_logging(settings: Settings) -> None:
                 "json": {"()": JsonFormatter},
                 "text": {"()": SafeTextFormatter},
             },
-            "handlers": {
-                "default": {
-                    "class": "logging.StreamHandler",
-                    "formatter": formatter_name,
-                    "stream": "ext://sys.stdout",
-                },
-            },
+            "handlers": handlers,
             "root": {
-                "handlers": ["default"],
+                "handlers": root_handlers,
                 "level": settings.log_level,
             },
         }

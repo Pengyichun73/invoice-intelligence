@@ -2,13 +2,31 @@
 
 ## 当前项目状态
 
-截至 `2026-09-24`，核心提取、Human Review Task、可信记忆治理、S3-compatible 存储主体、
+截至 `2026-09-25`，核心提取、Human Review Task、可信记忆治理、S3-compatible 存储主体、
 Training Registry 和独立财务 Domain 已有实现；Evaluation Job 的 PostgreSQL 队列、Scheduler 与
 诊断型 Stub Worker 已实现；两套 Suite 的 Runner 配置完整性门禁及 HTTPS 隔离 Runner Adapter
-已具备，但远端隔离评估服务、证据读取、索引部署验证、模型晋升实际部署控制和生产 Docker 部署
+已具备；独立隔离评估服务的只读边界已实现，但真实变体引擎、脱敏证据快照、索引部署验证、模型晋升实际部署控制和生产 Docker 部署
 仍未闭环。交易候选来源校验与审核 CAS 已补齐；历史客户端构造的候选不会自动升级为可信数据，
 授权 Reviewer 仅可将其审计升级为 `escalated`。统一完成度、阻塞项和任务优先级见
 [`docs/project-status.md`](docs/project-status.md)，不得仅根据类、路由或容器名称判断能力已完成。
+
+P0 部署核对已确认源码 Alembic head 为 `20260924_0044_code_harness_repair_route`，
+并修正了 password file 末尾换行的 preflight 判断；Compose 的对象存储 endpoint 可由
+`OBJECT_STORAGE_ENDPOINT_URL` 指定 HTTPS 地址；S3 启动检查会拒绝 Principal 数组中的公开授权。
+应用对象存储凭据可由 `OBJECT_STORAGE_APP_ACCESS_KEY` 与 `OBJECT_STORAGE_APP_SECRET_FILE`
+独立提供；示例配置仍回退到开发 MinIO 凭据。
+生命周期 Worker 可在完成业务 migration 后独立指向外部 S3，开发 MinIO 须先完成 Bucket 初始化。
+当前 Docker daemon 可连接，旧项目依赖容器仍运行，运行容器的 PostgreSQL 服务名与工作树
+Compose 定义不一致。经确认，原业务库已从实际 `0031` 升至唯一 head `0044`；切换前备份已在
+独立数据库恢复验证，关键事实计数、租户关联及约束检查通过。独立 Compose project 的 API、
+Index Worker、PostgreSQL 和 Milvus 已以合成配置运行并完成健康检查与重启演练；该环境不代表
+原业务流量已切换，旧项目仍无 API/Worker。实际命令、备份校验及剩余门禁见
+[`docs/business-db-migration-preflight-2026-09-25.md`](docs/business-db-migration-preflight-2026-09-25.md)。
+独立 Compose 故障恢复已覆盖业务 PostgreSQL、独立 PostgreSQL Checkpointer 与 MinIO 卷：
+合成事实和对象 checksum 恢复一致，实际恢复就绪 65.87 秒；从恢复的合格源重建两类
+Milvus Collection，并验证缺项阻止新 Alias 激活。证据及未执行项见
+[`docs/backup-restore-acceptance-2026-09-25.md`](docs/backup-restore-acceptance-2026-09-25.md)。
+OIDC/TLS、S3 和生命周期的完整隔离验收仍未完成，生产部署仍受限。
 
 后续按模块执行隔离验收和生产化补齐时，使用
 [`docs/codex-next-target-feature-prompt.md`](docs/codex-next-target-feature-prompt.md)；
@@ -31,18 +49,29 @@ Application/API、可信 actor、租户边界和 revision CAS admission，但长
 ## 隔离 Suite Runner 接入
 
 Evaluation Worker 默认只运行 `diagnostic_only` Snapshot Job；Suite Job 在未配置 Runner 时
-隔离，不回退到 Stub。若已有**独立部署且只读**的评估服务，可通过环境变量设置
+隔离，不回退到 Stub。独立 ASGI 服务工厂位于
+`invoice_intelligence.evaluation_runner.entrypoint:create_app`；须在隔离部署中提供
+`EVALUATION_SERVICE_TOKEN_FILE`、`EVALUATION_SERVICE_EVIDENCE_ROOT`、
+`EVALUATION_SERVICE_EVIDENCE_MANIFEST_FILE` 与
+`EVALUATION_SERVICE_ENGINE_FACTORY=module:function`，再使用
+`uvicorn invoice_intelligence.evaluation_runner.entrypoint:create_app --factory` 启动。
+引擎工厂须为全部 11 个 `EvaluationVariant` 提供真实只读实现；缺项拒绝启动。
+证据以 `isolated://<key>` 指向 `<root>/<tenant_id>/<key>`，预登记清单格式为
+`{"tenant-a":{"isolated://key":"<sha256>"}}`，仅允许脱敏只读快照；文件缺失、越界、过大或
+checksum 不符会拒绝请求。实际部署须启用 TLS 并限制服务与证据源访问。
+Worker 可通过环境变量设置
 `INVOICE_INTELLIGENCE_EVALUATION_RUNNER_ENDPOINT`（HTTPS 完整 URL）、
 `INVOICE_INTELLIGENCE_EVALUATION_RUNNER_TOKEN_FILE`（容器内 secret 文件路径）。
 两项必须同时提供；凭据和隔离服务应由部署方独立提供。聚合 JSON/Markdown 报告直接写入
 PostgreSQL `evaluation_report_artifacts`，不依赖本地报告目录。
 可另设 `EVALUATION_RUNNER_TIMEOUT_SECONDS`、`EVALUATION_RUNNER_MAX_RETRIES`、
 `EVALUATION_RUNNER_MAX_CONCURRENCY` 与 `EVALUATION_SUITE_TIMEOUT_SECONDS`，均使用
-`INVOICE_INTELLIGENCE_` 前缀。Compose 未内置真实评估服务或 token。
+`INVOICE_INTELLIGENCE_` 前缀。Compose 未内置真实变体引擎、证据快照或 token。
 
-Adapter 按 `isolated-evaluation-runner-v1` 发送冻结数据集的文档/模板清单、案例证据引用和
+Adapter 按 `isolated-evaluation-runner-v1` 发送 Suite、变体、冻结数据集的文档/模板清单、案例证据引用和
 版本绑定，不发送 Ground Truth、Reviewer、完整发票值或图片；服务须返回请求 SHA-256、隔离
-清单 SHA-256 和对应的结构化 Observation。Worker 校验响应后再由 Application Service 聚合。
+清单 SHA-256 和对应的结构化 Observation。服务校验冻结清单、案例身份及证据 checksum，Worker
+校验响应后再由 Application Service 聚合。
 该绑定校验不能证明远端确实使用了隔离只读数据源，须通过隔离环境的账号权限和执行记录验收。
 
 ## 可插拔对象存储
@@ -111,6 +140,27 @@ PostgreSQL 事务切换注册状态。门禁还要求冻结的同租户评估数
 后续前端交互迭代可直接复用 [`FRONTEND_INTERACTION_OPTIMIZATION_PROMPT.md`](FRONTEND_INTERACTION_OPTIMIZATION_PROMPT.md)。
 
 ## Trace、审计与隐私遥测
+
+在项目根目录 `G:\work\ai` 启动 API 或 Worker 时，development 默认把应用 JSONL 日志
+自动写入 `G:\work\ai\logs\<进程名>\<进程名>-<PID>.jsonl`，同时保留控制台输出。
+单文件默认 20 MB、保留 5 个轮转副本；进程启动时清理该组件目录内超过 7 天且所属进程
+已停止的旧文件。`logs/` 已由 Git 忽略。production 默认关闭本地落盘；可用
+`INVOICE_INTELLIGENCE_LOG_FILE_ENABLED` 显式切换。当前 Compose 明确开启文件输出，业务 API/Worker
+将 `/app/logs` 映射到项目 `./logs`；设 `LOG_FILE_ENABLED=false` 可关闭 Compose 文件输出。
+应用日志是 JSONL；Uvicorn 或其他外部进程自己的非 JSON 输出不属于此文件流。
+
+本地开发排障可直接从该日志目录生成限长诊断包：
+
+```powershell
+python -m invoice_intelligence.diagnostics --log .\logs `
+  --trace-id <X-Trace-ID> --tenant-id <trusted-tenant-id> --max-chars 6000
+```
+
+可按 `--since`、`--until`（带时区的 ISO 8601）和 `--error-code` 收窄；本地授权运维人员
+可加 `--with-db`，使用已有 Settings 只读查询同租户 Harness Task/Attempt/Postmortem 与治理审计。
+输出只含白名单技术字段、目标错误或首个失败事件、邻近事件和固定源码入口提示，不含原始日志正文、
+异常正文或发票值。该命令不调用大模型；按目录读取时只扫描各组件的 JSONL 主文件与轮转文件，
+每条可匹配事件须含 `trace_id` 与 `tenant_id`。源码提示只是排查起点，不是根因结论。
 
 每个 HTTP 请求由服务端生成或从受信任认证上下文继承 `trace_id`，客户端普通 Header、Body
 和 Query 均不能指定可信 Trace。响应通过 `X-Trace-ID` 返回技术关联标识；治理写响应同时返回
@@ -724,7 +774,7 @@ Application Service 已能在注入完整 Runner 后按领取 attempt 派生独�
 Suite 变体。`20260924_0039_evaluation_report_artifacts` 要求当前租约在 PostgreSQL 中确认完成 Run
 与聚合报告；晋升门禁重载 Job→Run、数据集、Suite、版本与报告一致性。失去租约的迟到 Run
 即使留下完成事实，也不能通过晋升门禁。Suite 执行有总时限，超时进入有限重试且不确认 Run。
-Worker 已可选装配 HTTPS Runner Adapter；远端评估服务、隔离证据账户和 token 未提供。
+Worker 已可选装配 HTTPS Runner Adapter；独立服务代码已提供，真实引擎、隔离证据账户和 token 未提供。
 Promotion Candidate 的门禁输入已改为从可信 PostgreSQL 评估、产物与版本事实读取，但这不等于已部署模型或已具备自动晋升。
 独立 OfflineEvaluationService 现在要求报告 Publisher 返回产物引用后才持久化 `completed`；
 发布失败会记录为失败 Run。Job→Run 的续租与确认链已有隔离数据库等价测试；真实 Suite Runner
@@ -1015,3 +1065,5 @@ P1 的 Evaluation queue/worker/scheduler、training sync 占位清理和 Index l
 
 索引重建使用独立的 PostgreSQL 队列。`python -m invoice_intelligence.workers.index_rebuild`（兼容入口）或 `python -m invoice_intelligence.workers.index_projection` 只执行 `project/verify`；Alias 的 `activate/rollback` 必须由具备 `INDEX_ACTIVATE` 权限的用户显式调用。
 两类队列使用 `lease_expires_at`、稳定 Worker ID 和随机 token 进行领取、续租、超时恢复及迟到写入隔离。Docker 服务为 `core` profile 的 `index-rebuild`；必须在迁移 `20260923_0034_index_lease` 后启用并配置 `INDEX_PROJECTION_WORKER_ID`。完整启动与风险见 [`docs/index-projection-worker-runbook.md`](docs/index-projection-worker-runbook.md)。
+
+2026-09-24 在专用 PostgreSQL 数据库及真实隔离 Milvus 中完成两进程合成数据验收：两类投影的领取、续租、过期重领、迟到写入 fencing、失败重试、幂等和清单比对通过；删除新版本派生项后，激活被拒且旧 Alias 保留。复核命令、修复和未覆盖项见 [`docs/index-projection-acceptance-2026-09-24.md`](docs/index-projection-acceptance-2026-09-24.md)。该结果不代表生产环境验收。

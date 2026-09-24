@@ -39,6 +39,11 @@ class CodeSymbol:
     line_range: LineRange
     signature: str | None
     versions: ExecutionVersionBinding
+    tenant_id: str
+    repository_id: str
+    snapshot_id: str
+    snapshot_revision: int
+    source_revision: str
     parameters: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -49,8 +54,14 @@ class CodeSymbol:
             "name",
             "symbol_kind",
             "scope",
+            "tenant_id",
+            "repository_id",
+            "snapshot_id",
+            "source_revision",
         ):
             require_text(name, getattr(self, name), max_length=1024)
+        if self.snapshot_revision < 1:
+            raise ValueError("snapshot_revision must be positive")
         if self.parent_symbol is not None:
             require_text("parent_symbol", self.parent_symbol, max_length=1024)
         if self.signature is not None:
@@ -66,10 +77,25 @@ class CallEdge:
     file_path: str
     byte_range: ByteRange
     versions: ExecutionVersionBinding
+    tenant_id: str
+    repository_id: str
+    snapshot_id: str
+    snapshot_revision: int
+    source_revision: str
 
     def __post_init__(self) -> None:
-        for name in ("caller_symbol_id", "callee_name", "file_path"):
+        for name in (
+            "caller_symbol_id",
+            "callee_name",
+            "file_path",
+            "tenant_id",
+            "repository_id",
+            "snapshot_id",
+            "source_revision",
+        ):
             require_text(name, getattr(self, name), max_length=1024)
+        if self.snapshot_revision < 1:
+            raise ValueError("snapshot_revision must be positive")
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +111,11 @@ class CastChunk:
     text_checksum_sha256: str
     schema_version: str
     versions: ExecutionVersionBinding
+    tenant_id: str
+    repository_id: str
+    snapshot_id: str
+    snapshot_revision: int
+    source_revision: str
 
     def __post_init__(self) -> None:
         for name in (
@@ -94,8 +125,14 @@ class CastChunk:
             "symbol",
             "scope",
             "schema_version",
+            "tenant_id",
+            "repository_id",
+            "snapshot_id",
+            "source_revision",
         ):
             require_text(name, getattr(self, name), max_length=1024)
+        if self.snapshot_revision < 1:
+            raise ValueError("snapshot_revision must be positive")
         if self.parent_symbol is not None:
             require_text("parent_symbol", self.parent_symbol, max_length=1024)
         require_sha256("text_checksum_sha256", self.text_checksum_sha256)

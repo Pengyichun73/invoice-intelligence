@@ -82,7 +82,8 @@ class _Runner:
         self.delay = delay
 
     async def evaluate_case(
-        self, case: EvaluationCase, dataset: EvaluationDataset, bindings: object
+        self, case: EvaluationCase, dataset: EvaluationDataset,
+        bindings: object, suite: EvaluationSuite,
     ) -> EvaluationCaseObservation:
         if self.delay:
             await asyncio.sleep(self.delay)

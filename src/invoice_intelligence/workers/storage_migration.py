@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from invoice_intelligence.application.errors import StorageChecksumMismatchError
 from invoice_intelligence.bootstrap import build_container, close_application_container
+from invoice_intelligence.config.logging import configure_logging
 from invoice_intelligence.domain.storage import ObjectKind, StorageWriteRequest
 from invoice_intelligence.infrastructure.persistence.database import create_business_engine
 from invoice_intelligence.infrastructure.persistence.sqlalchemy_models import (
@@ -19,6 +20,7 @@ from invoice_intelligence.infrastructure.storage.local import LocalFileStorage
 
 async def run() -> None:
     container = build_container(allow_legacy_storage_migration=True)
+    configure_logging(container.settings, component="storage-migration")
     if container.settings.file_storage_backend != "s3":
         raise RuntimeError("Storage migration requires FILE_STORAGE_BACKEND=s3")
     source = LocalFileStorage(container.settings.file_storage_root)

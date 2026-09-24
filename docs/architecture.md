@@ -39,6 +39,8 @@ Postmortem source event 已具备幂等事实写入、独立治理 Application S
 `DocumentIngestionService -> FileStorage` 是唯一上传调用方向；API Router 只调用 Application
 Service。`bootstrap.py` 根据 Pydantic Settings 组装 Local 或 S3-compatible Adapter。原件、渲染图
 和派生文本通过固定 `ObjectKind` 映射到三个独立 private Bucket，客户端不能指定 Bucket/key。
+S3 启动检查读取 Bucket ACL 与 Policy；`Allow` 的 Principal 数组包含通配符或使用
+`NotPrincipal` 时拒绝启动。该代码检查不能替代真实 S3 权限与匿名访问验收。
 
 上传安全校验完成后计算 SHA-256，Adapter 使用不可覆盖的稳定对象键写入并执行 HEAD/checksum
 验证。Document 与 `stored_objects` 在同一 PostgreSQL 事务登记；MinIO/S3 不参与数据库事务。
@@ -790,6 +792,7 @@ frozen human-adjudicated EvaluationDataset (PostgreSQL)
   -> tenant-scoped Suite Job with immutable dataset/Suite/version binding
   -> runner unavailable: quarantined without diagnostic fallback
   -> configured HTTPS isolated Runner Adapter (optional Worker wiring)
+  -> separate ASGI evaluation service + tenant-scoped read-only evidence snapshot
   -> fixed Suite variants through EvaluationVariantRunner Ports
   -> deterministic aggregate and bucket metrics
   -> immutable EvaluationRun (PostgreSQL)
@@ -809,11 +812,15 @@ Suite Job 与旧 Snapshot 诊断 Job 共用 PostgreSQL 队列表；`evaluation_j
 Suite 运行超过总时限时取消当前执行，并用固定错误码进入有限重试；未确认的 Run 不具备晋升资格。
 Worker 已通过 `bootstrap.py` 选择性装配 HTTPS 隔离 Runner Adapter，缺少 endpoint 或 token
 file 时 fail closed，不调用 Stub。Port 接收冻结 Dataset、Case 与版本绑定；Adapter
-只发送训练/评估文档与模板清单、证据引用及版本，省略 Ground Truth 和 Reviewer。响应须回显
+只发送 Suite/变体、训练/评估文档与模板清单、证据引用及版本，省略 Ground Truth 和 Reviewer。
+服务拒绝不属于所选 Suite 的变体。响应须回显
 请求与隔离清单的 SHA-256，并由 Pydantic/Domain 校验 Observation 身份及结构；Application
 Service 继续校验召回来源属于训练集。聚合报告写入 PostgreSQL `evaluation_report_artifacts`；
-Compose 未提供远端评估服务和 token。
-远端的只读隔离证据访问、真实 PostgreSQL 双 Worker 并发、崩溃恢复和真实报告发布演练仍待完成；
+独立服务通过 token 文件、冻结清单 SHA-256、案例与租户绑定及租户目录中的证据 SHA-256 校验，
+在启动时要求全部变体引擎；引擎以 Port 接收脱敏证据 bytes，不接收 Ground Truth。服务不连接业务
+PostgreSQL，也不写报告或晋升事实。隔离部署须提供真实只读引擎、证据快照和 TLS；Compose 未提供
+这些资源或 token。
+真实变体执行、PostgreSQL 双 Worker 并发、崩溃恢复和真实报告发布演练仍待完成；
 本地隔离测试只证明门禁逻辑，不代表真实 Compose 或外部服务已验收。
 
 ## Training, promotion and rollback
@@ -862,6 +869,25 @@ Alias。实现保持 `pymilvus>=2.6,<3.0` 约束；升级 Client major version �
 - [Milvus Alias](https://milvus.io/docs/zh/manage-aliases.md)
 
 ## Unified Trace and privacy telemetry
+
+### 开发诊断包
+
+`configure_logging` 在 development 默认同时配置标准输出与按组件/PID 隔离的本地 JSONL
+`RotatingFileHandler`。日志目录默认是工作目录下的 `logs/`，启动时创建；Compose 将 `/app/logs`
+绑定到项目 `./logs`。文件大小、轮转份数和旧文件保留天数由 Settings 控制，清理仅在进程启动时
+执行且跳过仍在运行的 PID。production 默认仅输出标准输出，部署方可显式启用文件输出。
+当前 Compose 显式开启文件输出并绑定宿主机目录，可用 `LOG_FILE_ENABLED=false` 关闭。
+文件输出复用现有字段白名单和 JSON formatter；它不是 PostgreSQL 审计事实源。
+
+`invoice_intelligence.diagnostics` 是本地只读诊断入口。它从单个有大小上限的 JSONL 日志文件中
+或项目 `logs/` 下各组件的主文件/轮转文件中按 Trace、租户和可选时间窗筛选事件，
+只接受字段白名单和有界技术标识；不能把日志正文、
+Prompt、异常正文或远程响应透传给开发 Agent。输出选择首个失败事件与邻近少量事件，并限制
+序列化 JSON 的长度；提供 `--error-code` 时优先定位该错误，否则定位首个失败。
+固定阶段到源码路径映射仅提供初始定位线索。
+可选 PostgreSQL 读取仅查询同租户 Trace 的 Harness Task、最近 Attempt、Postmortem 和治理审计
+技术事实；不访问发票值、Patch 内容或原始原因文本。该入口不更改业务事实、不向模型发送内容，
+也不是外部 Trace Collector；缺少结构化日志文件或数据库连接时不会伪造诊断结果。
 
 ### 生命周期与传播
 
@@ -1163,8 +1189,8 @@ Service 查询已持久化的同租户完成结果，不向识别 Domain 回写�
   完成和跨境处理状态不能由本项目日志单独证明。
 - 治理 reason 等自由文本仍依赖入口长度限制与 Redactor，无法阻止已获授权用户主动粘贴所有类型
   的敏感信息；生产环境仍需要 DLP 规则和审计抽查。
-- 隔离 PostgreSQL 双 Worker、真实 Milvus 完整性演练、Prometheus/Grafana 外部告警接入和向量记忆独立数据库；
-  当前 projection 已有 lease expiry 与稳定 worker identity，但尚未经容器并发与真实向量库验收。
+- 索引 projection 的长期容器实际队列、持续漂移监测与生产规模故障恢复、Prometheus/Grafana
+  外部告警接入和向量记忆独立数据库；双进程与真实隔离 Milvus 合成数据及清单破坏注入已验收。
 - OTLP Exporter、外部 Trace Collector 的交付确认和跨服务 W3C Trace Context；当前实现只接受
   受信任上下文并输出内容关闭的本地结构化 Span。
 - 完整的 Milvus 无人值守全量重建与独立监控告警；现有 index worker 只能视为部分实现。
@@ -1197,8 +1223,25 @@ Compose 只通过显式 profiles 启动 core/auth/vector/mlops 组件，服务�
 不使用 host network。PostgreSQL、Milvus、etcd、对象存储和模型产物使用独立 volumes，`migration`
 为一次性容器。PostgreSQL password file 由统一 Settings 在进程内解析，API、migration 和 Worker
 共享无密码环境变量 URL 与只读 secret 路径；entrypoint 不再把密码导出到环境变量。Checkpointer
-继续使用独立 DSN，不复用业务密码解析。evaluation/scheduler 使用隔离评估 DSN，
-training-worker 使用业务 Training Registry queue；生产连接与安全配置尚未端到端验收。
+继续使用独立 DSN，不复用业务密码解析。evaluation/scheduler 与 API 使用同一业务 PostgreSQL
+评估 Job queue；training-worker 使用业务 Training Registry queue。preflight 与 Settings 均接受
+password file 的末尾 CR/LF，同时拒绝空值、内部换行和超长内容。Compose 的 API 与生命周期 Worker
+可通过 `OBJECT_STORAGE_ENDPOINT_URL` 指向 HTTPS S3 endpoint；默认内部 MinIO HTTP 仅用于开发。
+应用 S3 凭据由独立的 `object_storage_app_secret_key` Compose secret 挂载，示例默认引用开发
+MinIO 密钥文件；生产应提供最小权限凭据文件与独立 Access Key。生命周期 Worker 不依赖
+MinIO 初始化容器，开发 MinIO 场景仍须先创建 private Bucket。
+原业务 PostgreSQL 已在确认后从实际 `20260923_0031_storage_fk` 升至唯一源码 head
+`20260924_0044_code_harness_repair_route`；切换前归档再次恢复到独立库，关键事实、租户关联及
+约束检查通过。另以独立 Compose project 运行 API、Index Worker、PostgreSQL 和 Milvus，
+验证 password file、健康检查与重启恢复；随后独立恢复 project 从校验归档恢复业务事实、
+独立 PostgreSQL Checkpointer 和 MinIO 对象，按 PostgreSQL 合格源重建两类 Milvus
+Collection 并验证清单及 Alias 失配门禁。完整证据见
+[`backup-restore-acceptance-2026-09-25.md`](backup-restore-acceptance-2026-09-25.md)。
+这些均为合成数据，不包含原业务流量或生产规模。
+当前运行容器的 `postgres-business`/`postgres-checkpoint` 服务名与工作树 Compose 的 `postgres`
+定义不一致，不能直接以新配置替换旧项目。实际副本、备份和停写门禁见
+[`business-db-migration-preflight-2026-09-25.md`](business-db-migration-preflight-2026-09-25.md)。
+生产连接与安全配置尚未端到端验收。
 因此 Compose 只适合结构验证和受控开发编排，
 不能宣称生产就绪；详见 `docs/docker-deployment.md`。
 
@@ -1230,8 +1273,10 @@ projection。两类队列支持 `FOR UPDATE SKIP LOCKED`、`lease_expires_at`、
 内建 Milvus Adapter 的激活门禁在 PostgreSQL 队列完成和 Collection 可访问后，强一致遍历
 Collection 的租户、版本、ID 与 projection checksum，并与 PostgreSQL 当前合格案例或字段投影
 清单完全比对；缺失、额外、错租户、错版本或 checksum 失配均阻断激活。索引 Worker 的校验
-结果会记录为低基数失败事件；它不会自行切换 Alias，失败时继续保留旧 Alias。该代码尚未经
-真实 Milvus 全量演练及隔离 PostgreSQL 双 Worker 验证，不能宣称生产索引部署已完成。
+结果会记录为低基数失败事件；它不会自行切换 Alias，失败时继续保留旧 Alias。2026-09-24
+使用专用 PostgreSQL 库、两个独立进程和真实隔离 Milvus 对两类投影完成合成数据并发及
+缺项阻断 Alias 验收；证据见 [`index-projection-acceptance-2026-09-24.md`](index-projection-acceptance-2026-09-24.md)。
+此结果不覆盖生产规模、断网恢复或备份恢复，不能宣称生产索引部署已完成。
 
 完整完成度与后续任务统一见 [`project-status.md`](project-status.md)。
 后续模块化执行提示词见 [`codex-next-target-feature-prompt.md`](codex-next-target-feature-prompt.md)；

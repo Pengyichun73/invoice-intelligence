@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 import psycopg
 
+from invoice_intelligence.config.logging import configure_logging
 from invoice_intelligence.config.settings import get_settings
 
 
@@ -20,7 +21,9 @@ class QueuedWorkerSpec:
 
 
 async def run_queued_worker(spec: QueuedWorkerSpec) -> None:
-    dsn = get_settings().resolved_business_database_url.get_secret_value()
+    settings = get_settings()
+    configure_logging(settings, component=spec.name)
+    dsn = settings.resolved_business_database_url.get_secret_value()
     if not dsn.startswith("postgresql+psycopg://"):
         raise RuntimeError(f"{spec.name} requires PostgreSQL business storage")
     dsn = dsn.replace("postgresql+psycopg://", "postgresql://", 1)

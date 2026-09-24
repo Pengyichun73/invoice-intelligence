@@ -171,3 +171,5 @@ class HarnessTaskResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     next_attempt_at: datetime | None
+    next_stage: str | None
+    retry_reason_code: HarnessErrorCode | None

@@ -27,18 +27,32 @@ class PythonAstParser:
     async def parse(
         self,
         *,
+        tenant_id: str,
+        repository_id: str,
         snapshot_id: str,
+        snapshot_revision: int,
+        source_revision: str,
         files: tuple[SnapshotFile, ...],
         contents: Mapping[str, bytes],
         versions: ExecutionVersionBinding,
     ) -> tuple[ParsedArtifact, ...]:
-        del snapshot_id
         self._grammar_registry.require(self.language)
         results: list[ParsedArtifact] = []
         for file in files:
             if not file.path.endswith(".py"):
                 continue
-            results.append(self._parse_file(file, contents.get(file.path), versions))
+            results.append(
+                self._parse_file(
+                    file,
+                    contents.get(file.path),
+                    tenant_id=tenant_id,
+                    repository_id=repository_id,
+                    snapshot_id=snapshot_id,
+                    snapshot_revision=snapshot_revision,
+                    source_revision=source_revision,
+                    versions=versions,
+                )
+            )
         if not results:
             raise HarnessError(HarnessErrorCode.PARSER_NOT_CONFIGURED, "no Python files found")
         return tuple(results)
@@ -47,6 +61,12 @@ class PythonAstParser:
         self,
         file: SnapshotFile,
         source: bytes | None,
+        *,
+        tenant_id: str,
+        repository_id: str,
+        snapshot_id: str,
+        snapshot_revision: int,
+        source_revision: str,
         versions: ExecutionVersionBinding,
     ) -> ParsedArtifact:
         if source is None:
@@ -83,6 +103,11 @@ class PythonAstParser:
             return self._parse_tolerant(
                 file=file,
                 text=text,
+                tenant_id=tenant_id,
+                repository_id=repository_id,
+                snapshot_id=snapshot_id,
+                snapshot_revision=snapshot_revision,
+                source_revision=source_revision,
                 versions=versions,
                 diagnostic=ParseDiagnostic(
                     "syntax_error",
@@ -109,6 +134,11 @@ class PythonAstParser:
                 line_range=LineRange(1, max(1, len(lines))),
                 signature=None,
                 versions=versions,
+                tenant_id=tenant_id,
+                repository_id=repository_id,
+                snapshot_id=snapshot_id,
+                snapshot_revision=snapshot_revision,
+                source_revision=source_revision,
             )
         )
         self._visit(
@@ -116,6 +146,11 @@ class PythonAstParser:
             file.path,
             lines,
             versions,
+            tenant_id=tenant_id,
+            repository_id=repository_id,
+            snapshot_id=snapshot_id,
+            snapshot_revision=snapshot_revision,
+            source_revision=source_revision,
             parent_symbol=module_id,
             symbols=symbols,
             edges=edges,
@@ -135,6 +170,11 @@ class PythonAstParser:
         *,
         file: SnapshotFile,
         text: str,
+        tenant_id: str,
+        repository_id: str,
+        snapshot_id: str,
+        snapshot_revision: int,
+        source_revision: str,
         versions: ExecutionVersionBinding,
         diagnostic: ParseDiagnostic,
     ) -> ParsedArtifact:
@@ -163,6 +203,11 @@ class PythonAstParser:
             path=file.path,
             lines=lines,
             source_length=len(text.encode("utf-8")),
+            tenant_id=tenant_id,
+            repository_id=repository_id,
+            snapshot_id=snapshot_id,
+            snapshot_revision=snapshot_revision,
+            source_revision=source_revision,
             versions=versions,
         )
         module_id = f"{file.path}:module"
@@ -179,6 +224,11 @@ class PythonAstParser:
                 line_range=LineRange(1, max(1, len(lines))),
                 signature=None,
                 versions=versions,
+                tenant_id=tenant_id,
+                repository_id=repository_id,
+                snapshot_id=snapshot_id,
+                snapshot_revision=snapshot_revision,
+                source_revision=source_revision,
             )
         ]
         symbols.extend(entry.symbol for entry in entries)
@@ -188,6 +238,11 @@ class PythonAstParser:
             path=file.path,
             lines=lines,
             versions=versions,
+            tenant_id=tenant_id,
+            repository_id=repository_id,
+            snapshot_id=snapshot_id,
+            snapshot_revision=snapshot_revision,
+            source_revision=source_revision,
         )
         diagnostics = (diagnostic,) + (
             (tokenizer_diagnostic,) if tokenizer_diagnostic is not None else ()
@@ -209,6 +264,11 @@ class PythonAstParser:
         lines: list[str],
         versions: ExecutionVersionBinding,
         *,
+        tenant_id: str,
+        repository_id: str,
+        snapshot_id: str,
+        snapshot_revision: int,
+        source_revision: str,
         parent_symbol: str | None,
         symbols: list[CodeSymbol],
         edges: list[CallEdge],
@@ -232,6 +292,11 @@ class PythonAstParser:
                     line_range=LineRange(node.lineno, getattr(node, "end_lineno", node.lineno)),
                     signature=signature,
                     versions=versions,
+                    tenant_id=tenant_id,
+                    repository_id=repository_id,
+                    snapshot_id=snapshot_id,
+                    snapshot_revision=snapshot_revision,
+                    source_revision=source_revision,
                     parameters=_parameters(node),
                 )
             )
@@ -246,6 +311,11 @@ class PythonAstParser:
                         file_path=path,
                         byte_range=ByteRange(start, end),
                         versions=versions,
+                        tenant_id=tenant_id,
+                        repository_id=repository_id,
+                        snapshot_id=snapshot_id,
+                        snapshot_revision=snapshot_revision,
+                        source_revision=source_revision,
                     )
                 )
         for child in ast.iter_child_nodes(node):
@@ -254,6 +324,11 @@ class PythonAstParser:
                 path,
                 lines,
                 versions,
+                tenant_id=tenant_id,
+                repository_id=repository_id,
+                snapshot_id=snapshot_id,
+                snapshot_revision=snapshot_revision,
+                source_revision=source_revision,
                 parent_symbol=current_symbol,
                 symbols=symbols,
                 edges=edges,
@@ -319,6 +394,11 @@ def _tolerant_entries(
     path: str,
     lines: list[str],
     source_length: int,
+    tenant_id: str,
+    repository_id: str,
+    snapshot_id: str,
+    snapshot_revision: int,
+    source_revision: str,
     versions: ExecutionVersionBinding,
 ) -> list[_TolerantEntry]:
     declarations: list[tuple[int, int, str, str, int, str, tuple[str, ...]]] = []
@@ -397,6 +477,11 @@ def _tolerant_entries(
                     line_range=LineRange(start_line, _byte_to_line(lines, end)),
                     signature=_tolerant_signature(lines, start_line),
                     versions=versions,
+                    tenant_id=tenant_id,
+                    repository_id=repository_id,
+                    snapshot_id=snapshot_id,
+                    snapshot_revision=snapshot_revision,
+                    source_revision=source_revision,
                     parameters=parameters,
                 ),
                 start_line=start_line,
@@ -413,6 +498,11 @@ def _tolerant_call_edges(
     path: str,
     lines: list[str],
     versions: ExecutionVersionBinding,
+    tenant_id: str,
+    repository_id: str,
+    snapshot_id: str,
+    snapshot_revision: int,
+    source_revision: str,
 ) -> list[CallEdge]:
     edges: list[CallEdge] = []
     for index, token in enumerate(tokens):
@@ -440,6 +530,11 @@ def _tolerant_call_edges(
                 file_path=path,
                 byte_range=ByteRange(start, max(start, end)),
                 versions=versions,
+                tenant_id=tenant_id,
+                repository_id=repository_id,
+                snapshot_id=snapshot_id,
+                snapshot_revision=snapshot_revision,
+                source_revision=source_revision,
             )
         )
     return edges

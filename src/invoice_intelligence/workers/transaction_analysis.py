@@ -6,6 +6,7 @@ import signal
 from threading import Event
 
 from invoice_intelligence.bootstrap import build_container, close_application_container
+from invoice_intelligence.config.logging import configure_logging
 
 
 def main() -> None:
@@ -13,6 +14,7 @@ def main() -> None:
     signal.signal(signal.SIGINT, lambda *_: stop.set())
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     container = build_container()
+    configure_logging(container.settings, component="transaction-analysis")
     logger = logging.getLogger(__name__)
     try:
         while not stop.is_set():

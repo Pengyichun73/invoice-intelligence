@@ -120,7 +120,7 @@ class MilvusFieldSemanticIndexStore(FieldSemanticIndexStore):
                     "upsert_field_semantics",
                     lambda batch=batch, collection=collection: self._client_required().upsert(
                         collection_name=collection,
-                        data=batch,
+                        data=list(batch),
                         timeout=self._operation_timeout,
                     ),
                 )
@@ -378,13 +378,20 @@ class MilvusFieldSemanticIndexStore(FieldSemanticIndexStore):
             except MilvusIndexError:
                 if not await self._collection_exists(collection):
                     raise
-        await self._call(
-            "load_field_semantic_collection",
-            lambda: self._client_required().load_collection(
-                collection_name=collection,
-                timeout=self._operation_timeout,
-            ),
-        )
+        for attempt in range(20):
+            try:
+                await self._call(
+                    "load_field_semantic_collection",
+                    lambda: self._client_required().load_collection(
+                        collection_name=collection,
+                        timeout=self._operation_timeout,
+                    ),
+                )
+                break
+            except MilvusIndexError as exc:
+                if getattr(exc.__cause__, "code", None) != 700 or attempt == 19:
+                    raise
+                await asyncio.sleep(0.25)
 
     async def _collection_exists(self, collection: str) -> bool:
         return bool(

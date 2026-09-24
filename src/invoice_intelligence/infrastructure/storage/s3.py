@@ -83,11 +83,17 @@ class S3FileStorage:
         for statement in statements:
             if not isinstance(statement, dict) or statement.get("Effect") != "Allow":
                 continue
-            principal = statement.get("Principal")
-            if principal == "*" or (
-                isinstance(principal, dict) and principal.get("AWS") == "*"
-            ):
+            if "NotPrincipal" in statement:
                 return True
+            principal = statement.get("Principal")
+            if principal == "*":
+                return True
+            if isinstance(principal, dict):
+                for identities in principal.values():
+                    if identities == "*" or (
+                        isinstance(identities, list) and "*" in identities
+                    ):
+                        return True
         return False
 
     async def save(self, document_id: str, content: bytes, mime_type: str) -> str:

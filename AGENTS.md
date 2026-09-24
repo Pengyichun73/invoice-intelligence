@@ -87,6 +87,10 @@
 
 ## 远程 Provider、文件与日志安全
 
+- 排查有 `X-Trace-ID` 的开发报错时，先使用 `python -m invoice_intelligence.diagnostics`
+  从项目 `logs/` 目录或授权导出的 JSONL 日志生成限长诊断包，再按失败阶段和固定源码提示读取相关代码；
+  不将整份日志、原始异常正文或未脱敏业务数据放入模型上下文。
+
 - 千问、OpenAI、OCR、Embedding、Reranker 等远程调用必须具备超时、有限重试、限流、并发控制、熔断、脱敏和审计。
 - Provider 必须通过固定 Port，返回值必须经过 Pydantic 或 Domain 校验。
 - 不猜测官方模型名、SDK、参数或 API 行为；涉及千问和 Milvus 时先核对当前官方文档。

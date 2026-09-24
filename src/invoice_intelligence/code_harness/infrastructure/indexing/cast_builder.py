@@ -33,6 +33,11 @@ def build_cast_chunks(
                     text_checksum_sha256=sha256(text).hexdigest(),
                     schema_version=snapshot.versions.schema_version,
                     versions=snapshot.versions,
+                    tenant_id=symbol.tenant_id,
+                    repository_id=symbol.repository_id,
+                    snapshot_id=symbol.snapshot_id,
+                    snapshot_revision=symbol.snapshot_revision,
+                    source_revision=symbol.source_revision,
                 )
             )
     return tuple(chunks)

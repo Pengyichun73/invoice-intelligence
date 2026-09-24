@@ -1,6 +1,7 @@
 """隔离 Runner 仅接收证据引用，并拒绝错配及不可信响应。"""
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from hashlib import sha256
 
@@ -11,6 +12,7 @@ from invoice_intelligence.domain.evaluation import (
     EvaluationBindings,
     EvaluationCase,
     EvaluationDataset,
+    EvaluationSuite,
     EvaluationVariant,
 )
 from invoice_intelligence.domain.examples import (
@@ -96,7 +98,9 @@ async def test_http_runner_binds_manifest_without_sending_ground_truth() -> None
                 endpoint="https://isolated.example.test/evaluate", bearer_token="isolated-token"
             ), client=client,
         )
-        observation = await runner.evaluate_case(dataset.cases[0], dataset, _bindings())
+        observation = await runner.evaluate_case(
+            dataset.cases[0], dataset, _bindings(), EvaluationSuite.CASE_RAG
+        )
     assert observation.case_id == "case-a"
     assert observation.variant is EvaluationVariant.NO_MEMORY
 
@@ -121,7 +125,9 @@ async def test_http_runner_rejects_unbound_or_cross_tenant_response() -> None:
             ), client=client,
         )
         with pytest.raises(ValueError, match="binding mismatch"):
-            await runner.evaluate_case(dataset.cases[0], dataset, _bindings())
+            await runner.evaluate_case(
+                dataset.cases[0], dataset, _bindings(), EvaluationSuite.CASE_RAG
+            )
 
 
 def test_http_runner_rejects_plaintext_or_embedded_credentials() -> None:
@@ -131,3 +137,23 @@ def test_http_runner_rejects_plaintext_or_embedded_credentials() -> None:
     ):
         with pytest.raises(ValueError, match="HTTPS endpoint"):
             IsolatedEvaluationRunnerConfig(endpoint=endpoint, bearer_token="isolated-token")
+
+
+@pytest.mark.asyncio
+async def test_http_runner_rejects_nonisolated_evidence_before_network() -> None:
+    dataset = _dataset()
+    case = replace(
+        dataset.cases[0],
+        evidence_reference=ExampleEvidenceReference(
+            document_reference="https://production.example.test/invoice"
+        ),
+    )
+    dataset = replace(dataset, cases=(case,))
+    runner = IsolatedHTTPEvaluationVariantRunner(
+        EvaluationVariant.NO_MEMORY,
+        IsolatedEvaluationRunnerConfig(
+            endpoint="https://isolated.example.test/evaluate", bearer_token="isolated-token"
+        ),
+    )
+    with pytest.raises(ValueError, match="isolated reference"):
+        await runner.evaluate_case(case, dataset, _bindings(), EvaluationSuite.CASE_RAG)

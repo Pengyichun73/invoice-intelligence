@@ -338,6 +338,10 @@ def _task_values(task: HarnessTask, idempotency_key_hash: str | None) -> dict[st
             name: getattr(task.budget, name) for name in task.budget.__dataclass_fields__
         },
         "failure_code": task.failure_code.value if task.failure_code else None,
+        "next_stage": task.next_stage,
+        "retry_reason_code": (
+            task.retry_reason_code.value if task.retry_reason_code else None
+        ),
         "next_attempt_at": task.next_attempt_at,
         "worker_id": None,
         "lease_token": task.lease_token,
@@ -366,6 +370,10 @@ def _to_task(row: CodeHarnessTaskRow) -> HarnessTask:
         created_at=row.created_at,
         updated_at=row.updated_at,
         next_attempt_at=row.next_attempt_at,
+        next_stage=row.next_stage,
+        retry_reason_code=(
+            HarnessErrorCode(row.retry_reason_code) if row.retry_reason_code else None
+        ),
         lease_token=row.lease_token,
         lease_expires_at=row.lease_expires_at,
     )

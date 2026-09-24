@@ -56,7 +56,7 @@ class _Runs:
 
 
 class _Executor:
-    async def evaluate(self, dataset, variant, bindings):
+    async def evaluate(self, dataset, variant, bindings, suite):
         return (EvaluationCaseObservation(
             case_id="case-1", tenant_id="tenant-a", variant=variant,
             retrieved_examples=(),

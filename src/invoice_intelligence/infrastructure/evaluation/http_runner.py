@@ -18,10 +18,12 @@ from invoice_intelligence.domain.evaluation import (
     EvaluationCaseObservation,
     EvaluationDataset,
     EvaluationRetrievedExample,
+    EvaluationSuite,
     EvaluationVariant,
     ExtractionEvaluationOutput,
     FieldBindingEvaluationOutput,
     MemoryAdmissionEvaluationOutput,
+    required_variants_for_suite,
 )
 from invoice_intelligence.domain.json_types import JsonValue
 
@@ -108,9 +110,15 @@ class IsolatedHTTPEvaluationVariantRunner:
         case: EvaluationCase,
         dataset: EvaluationDataset,
         bindings: EvaluationBindings,
+        suite: EvaluationSuite,
     ) -> EvaluationCaseObservation:
         if case.tenant_id != dataset.tenant_id or case not in dataset.cases:
             raise ValueError("Evaluation case is outside the frozen dataset")
+        if self._variant not in required_variants_for_suite(suite):
+            raise ValueError("Evaluation variant is outside the selected suite")
+        _require_isolated_reference(case.evidence_reference.document_reference)
+        if case.evidence_reference.image_reference is not None:
+            _require_isolated_reference(case.evidence_reference.image_reference)
         manifest = {
             "dataset_id": dataset.dataset_id,
             "dataset_version": dataset.version,
@@ -121,17 +129,27 @@ class IsolatedHTTPEvaluationVariantRunner:
             "evaluation_template_fingerprints": sorted(
                 {item.template_fingerprint for item in dataset.cases if item.template_fingerprint}
             ),
+            "evaluation_cases": [
+                {
+                    "case_id": item.case_id,
+                    "document_id": item.document_id,
+                    "template_fingerprint": item.template_fingerprint,
+                }
+                for item in sorted(dataset.cases, key=lambda item: item.case_id)
+            ],
         }
         manifest_sha256 = _digest(manifest)
         request = {
             "contract_version": "isolated-evaluation-runner-v1",
             "variant": self._variant.value,
+            "suite": suite.value,
             "case_id": case.case_id,
             "tenant_id": case.tenant_id,
             "document_id": case.document_id,
             "document_type": case.document_type,
             "field_path": case.field_path,
             "schema_version": case.schema_version,
+            "template_fingerprint": case.template_fingerprint,
             "evidence": {
                 "document_reference": case.evidence_reference.document_reference,
                 "image_reference": case.evidence_reference.image_reference,
@@ -152,80 +170,115 @@ class IsolatedHTTPEvaluationVariantRunner:
         }
         request_sha256 = _digest(request)
         headers = {"Authorization": f"Bearer {self._config.bearer_token}"}
+        if self._client is None:
+            async with httpx.AsyncClient(
+                timeout=self._config.timeout_seconds,
+                trust_env=False,
+                follow_redirects=False,
+            ) as client:
+                response_content = await self._request_content(client, request, headers)
+        else:
+            response_content = await self._request_content(self._client, request, headers)
+        try:
+            payload = _RunnerResponse.model_validate_json(response_content)
+            if (
+                payload.request_sha256 != request_sha256
+                or payload.isolation_manifest_sha256 != manifest_sha256
+            ):
+                raise ValueError("Isolated evaluation Runner binding mismatch")
+            raw = _ObservationResponse.model_validate(payload.observation)
+            extraction = raw.extraction
+            observation = EvaluationCaseObservation(
+                case_id=raw.case_id,
+                tenant_id=raw.tenant_id,
+                variant=raw.variant,
+                retrieved_examples=tuple(
+                    _RETRIEVED_EXAMPLE.validate_python(item)
+                    for item in raw.retrieved_examples
+                ),
+                extraction=ExtractionEvaluationOutput(
+                    actual_value=cast(JsonValue, extraction.actual_value),
+                    predicted_missing=extraction.predicted_missing,
+                    candidate_values=cast(
+                        tuple[JsonValue, ...], tuple(extraction.candidate_values)
+                    ),
+                    review_required=extraction.review_required,
+                    current_evidence_sufficient=extraction.current_evidence_sufficient,
+                    used_historical_prior_as_value=(
+                        extraction.used_historical_prior_as_value
+                    ),
+                ),
+                memory_admission=(
+                    _ADMISSION.validate_python(raw.memory_admission)
+                    if raw.memory_admission is not None else None
+                ),
+                field_binding=(
+                    _BINDING.validate_python(raw.field_binding)
+                    if raw.field_binding is not None else None
+                ),
+            )
+        except ValidationError as exc:
+            raise ValueError("Isolated evaluation Runner response is invalid") from exc
+        if (
+            observation.case_id != case.case_id
+            or observation.tenant_id != case.tenant_id
+            or observation.variant is not self._variant
+        ):
+            raise ValueError("Isolated evaluation Runner observation identity mismatch")
+        return observation
+
+    async def _request_content(
+        self,
+        client: httpx.AsyncClient,
+        request: dict[str, object],
+        headers: dict[str, str],
+    ) -> bytes:
         for attempt in range(self._config.max_retries + 1):
             try:
-                if self._client is None:
-                    async with httpx.AsyncClient(timeout=self._config.timeout_seconds) as client:
-                        response = await client.post(
-                            self._config.endpoint, json=request, headers=headers
-                        )
-                else:
-                    response = await self._client.post(
-                        self._config.endpoint, json=request, headers=headers,
-                        timeout=self._config.timeout_seconds,
-                    )
+                async with client.stream(
+                    "POST",
+                    self._config.endpoint,
+                    json=request,
+                    headers=headers,
+                    timeout=self._config.timeout_seconds,
+                ) as response:
+                    status_code = response.status_code
+                    if status_code == 200:
+                        content = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            if len(content) + len(chunk) > self._config.max_response_bytes:
+                                raise ValueError("Isolated evaluation Runner response is too large")
+                            content.extend(chunk)
+                        return bytes(content)
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 if attempt == self._config.max_retries:
                     raise RuntimeError("Isolated evaluation Runner transport failed") from exc
                 await asyncio.sleep(min(0.25 * 2**attempt, 2.0))
                 continue
-            if response.status_code == 429 or 500 <= response.status_code < 600:
+            if status_code == 429 or 500 <= status_code < 600:
                 if attempt == self._config.max_retries:
                     raise RuntimeError("Isolated evaluation Runner temporarily unavailable")
                 await asyncio.sleep(min(0.25 * 2**attempt, 2.0))
                 continue
-            if response.status_code != 200:
-                raise ValueError("Isolated evaluation Runner rejected the request")
-            if len(response.content) > self._config.max_response_bytes:
-                raise ValueError("Isolated evaluation Runner response is too large")
-            try:
-                payload = _RunnerResponse.model_validate_json(response.content)
-                if (
-                    payload.request_sha256 != request_sha256
-                    or payload.isolation_manifest_sha256 != manifest_sha256
-                ):
-                    raise ValueError("Isolated evaluation Runner binding mismatch")
-                raw = _ObservationResponse.model_validate(payload.observation)
-                extraction = raw.extraction
-                observation = EvaluationCaseObservation(
-                    case_id=raw.case_id,
-                    tenant_id=raw.tenant_id,
-                    variant=raw.variant,
-                    retrieved_examples=tuple(
-                        _RETRIEVED_EXAMPLE.validate_python(item)
-                        for item in raw.retrieved_examples
-                    ),
-                    extraction=ExtractionEvaluationOutput(
-                        actual_value=cast(JsonValue, extraction.actual_value),
-                        predicted_missing=extraction.predicted_missing,
-                        candidate_values=cast(tuple[JsonValue, ...], tuple(extraction.candidate_values)),
-                        review_required=extraction.review_required,
-                        current_evidence_sufficient=extraction.current_evidence_sufficient,
-                        used_historical_prior_as_value=(
-                            extraction.used_historical_prior_as_value
-                        ),
-                    ),
-                    memory_admission=(
-                        _ADMISSION.validate_python(raw.memory_admission)
-                        if raw.memory_admission is not None else None
-                    ),
-                    field_binding=(
-                        _BINDING.validate_python(raw.field_binding)
-                        if raw.field_binding is not None else None
-                    ),
-                )
-            except ValidationError as exc:
-                raise ValueError("Isolated evaluation Runner response is invalid") from exc
-            if (
-                observation.case_id != case.case_id
-                or observation.tenant_id != case.tenant_id
-                or observation.variant is not self._variant
-            ):
-                raise ValueError("Isolated evaluation Runner observation identity mismatch")
-            return observation
+            raise ValueError("Isolated evaluation Runner rejected the request")
         raise RuntimeError("Isolated evaluation Runner attempts exhausted")
 
 
 def _digest(payload: Mapping[str, object]) -> str:
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _require_isolated_reference(reference: str) -> None:
+    parsed = urlsplit(reference)
+    if (
+        parsed.scheme != "isolated"
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or "\\" in reference
+        or any(part in {".", ".."} for part in parsed.path.split("/"))
+    ):
+        raise ValueError("Evaluation evidence must use an isolated reference")

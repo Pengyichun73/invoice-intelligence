@@ -101,4 +101,6 @@ def _response(task: HarnessTask) -> HarnessTaskResponse:
         created_at=task.created_at,
         updated_at=task.updated_at,
         next_attempt_at=task.next_attempt_at,
+        next_stage=task.next_stage,
+        retry_reason_code=task.retry_reason_code,
     )
