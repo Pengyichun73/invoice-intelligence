@@ -153,7 +153,7 @@ onMounted(loadEvaluations)
     </div>
 
     <section v-if="mode === 'evaluation'" class="surface">
-      <header class="section-head"><div><span>Evaluation Job</span><h2>{{ state.jobs.length }} 个任务</h2></div><StatusBadge :value="state.jobs.some((item) => ['running', 'planned'].includes(item.status)) ? 'running' : 'completed'" /></header>
+      <header class="section-head"><div><span>评估任务</span><h2>{{ state.jobs.length }} 个任务</h2></div><StatusBadge :value="state.jobs.some((item) => ['running', 'planned'].includes(item.status)) ? 'running' : 'completed'" /></header>
       <p class="context-note">诊断型任务仅汇总预先提交的判断值，不能作为晋升证据。Suite 任务已绑定冻结数据集与版本；缺少真实 Runner 时会被隔离，只有真实完成的 Run 和报告产物才可进入晋升门禁。</p>
       <ResourceState :loading="state.loading" :error="state.error" :empty="!state.jobs.length" empty-text="当前租户没有评估任务" @retry="loadEvaluations">
         <div class="record-list"><article v-for="job in state.jobs" :key="job.job_id" @click="loadEvaluation(job)"><header><code>{{ job.job_id }}</code><StatusBadge :value="job.status" /></header><p>{{ job.evidence_class === 'suite_run' ? `Suite ${job.suite || '未知'}` : '诊断型' }} · {{ job.dataset_version }} · {{ job.model_version }} · {{ job.prompt_version }}</p><footer>尝试 {{ job.attempt_count }} 次 · {{ formatDate(job.updated_at) }}<span v-if="job.failure_code">不可用原因 {{ job.failure_code }}</span></footer></article></div>
@@ -162,14 +162,14 @@ onMounted(loadEvaluations)
     </section>
 
     <section v-else-if="mode === 'training'" class="surface">
-      <header class="section-head"><div><span>Training Job</span><h2>状态查询与控制</h2></div><ShieldAlert :size="20" /></header>
+      <header class="section-head"><div><span>训练任务</span><h2>状态查询与控制</h2></div><ShieldAlert :size="20" /></header>
       <div class="toolbar lookup-wide"><label>任务 ID<input v-model="training.id" placeholder="输入训练任务 ID" @keyup.enter="loadTraining" /></label><button class="secondary-btn" :disabled="training.busy" @click="loadTraining"><RefreshCw :size="16" />查询</button></div>
       <p v-if="training.error" class="alert error">{{ training.error }}</p>
       <article v-if="training.item" class="record-list"><header><strong>{{ training.item.job_id }}</strong><StatusBadge :value="training.item.status" /></header><dl class="meta-list columns"><div><dt>数据集版本</dt><dd>{{ training.item.dataset_version }}</dd></div><div><dt>模型版本</dt><dd>{{ training.item.model_version }}</dd></div><div><dt>训练运行</dt><dd>{{ training.item.training_run_id }}</dd></div><div><dt>revision</dt><dd>{{ training.item.revision }}</dd></div><div><dt>失败码</dt><dd>{{ training.item.failure_code || '无' }}</dd></div><div><dt>更新时间</dt><dd>{{ formatDate(training.item.updated_at) }}</dd></div></dl><div class="form-grid"><label>取消原因<input v-model="training.reason" placeholder="operator_requested" /></label></div><div class="button-row"><button class="secondary-btn" :disabled="training.busy" @click="cancelTraining">取消任务</button><button class="primary-btn" :disabled="training.busy" @click="retryTraining">登记重试</button></div></article>
     </section>
 
     <section v-else-if="mode === 'promotion'" class="surface">
-      <header class="section-head"><div><span>Promotion Candidate</span><h2>可信门禁与人工审批</h2></div><ShieldAlert :size="20" /></header>
+      <header class="section-head"><div><span>晋升候选</span><h2>可信门禁与人工审批</h2></div><ShieldAlert :size="20" /></header>
       <div class="form-grid"><label>候选 ID<input v-model="promotion.candidateId" /></label><label>Evaluation Run ID<input v-model="promotion.evaluationRunId" /></label><label>Artifact ID<input v-model="promotion.artifactId" /></label></div>
       <button class="primary-btn" :disabled="promotion.busy" @click="createPromotion">创建候选</button>
       <p class="context-note">客户端不提交指标、hard failure 或兼容性诊断；缺少可信证据时后端 fail closed。</p>
@@ -177,7 +177,7 @@ onMounted(loadEvaluations)
     </section>
 
     <section v-else class="surface">
-      <header class="section-head"><div><span>Transaction Analysis</span><h2>候选分析与复核</h2></div><FileSearch :size="20" /></header>
+      <header class="section-head"><div><span>交易分析</span><h2>候选分析与复核</h2></div><FileSearch :size="20" /></header>
       <div class="toolbar lookup-wide"><label>已完成提取 Run ID<input v-model="transaction.runId" placeholder="输入 run_id" @keyup.enter="analyzeTransaction" /></label><button class="primary-btn" :disabled="transaction.busy" @click="analyzeTransaction">分析候选</button></div>
       <p class="context-note">仅允许同租户已完成 Run；不在请求中接收 tenant_id 或 reviewer_id。</p>
       <article v-if="transaction.item" class="record-list"><header><strong>{{ transaction.item.candidate_transaction_id }}</strong><StatusBadge :value="transaction.item.status" /></header><p>评估状态：{{ displayLabel(transaction.item.status) }} · revision {{ transaction.item.revision }}</p><footer>审核人由可信上下文提供 · advisory score 不表示概率</footer><div class="form-grid"><label>复核决定<select v-model="transaction.decision"><option value="confirmed">confirmed</option><option value="dismissed">dismissed</option><option value="escalated">escalated</option></select></label><label>期望 revision<input v-model.number="transaction.expectedRevision" type="number" min="1" /></label></div><button class="primary-btn" :disabled="transaction.busy" @click="reviewTransaction">提交复核</button></article>

@@ -3,6 +3,7 @@ name: invoice-intelligence
 x-business-db-env: &business-db-env
   INVOICE_INTELLIGENCE_BUSINESS_DATABASE_URL: "postgresql+psycopg://${POSTGRES_BUSINESS_USER:?set POSTGRES_BUSINESS_USER}@postgres:5432/${POSTGRES_BUSINESS_DB:?set POSTGRES_BUSINESS_DB}"
   INVOICE_INTELLIGENCE_BUSINESS_DATABASE_PASSWORD_FILE: /run/secrets/postgres_business_password
+  INVOICE_INTELLIGENCE_MILVUS_URI: "http://milvus:19530"
   INVOICE_INTELLIGENCE_LOG_FILE_ENABLED: "${LOG_FILE_ENABLED:-true}"
 
 services:
@@ -33,6 +34,18 @@ services:
     volumes: [postgres_business_data:/var/lib/postgresql/data]
     healthcheck: {test: [CMD-SHELL, "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"], interval: 10s, timeout: 5s, retries: 10, start_period: 15s}
     deploy: {resources: {limits: {cpus: "2.0", memory: 2G}}}
+  postgres-checkpoint:
+    image: postgres:16-alpine
+    profiles: [core]
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_CHECKPOINT_USER:?set POSTGRES_CHECKPOINT_USER}
+      POSTGRES_DB: ${POSTGRES_CHECKPOINT_DB:?set POSTGRES_CHECKPOINT_DB}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_checkpoint_password
+    secrets: [postgres_checkpoint_password]
+    volumes: [postgres_checkpoint_data:/var/lib/postgresql/data]
+    healthcheck: {test: [CMD-SHELL, "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"], interval: 10s, timeout: 5s, retries: 10, start_period: 15s}
+    deploy: {resources: {limits: {cpus: "1.0", memory: 1G}}}
   postgres-auth:
     image: postgres:16-alpine
     profiles: [auth]
@@ -65,14 +78,42 @@ services:
     environment:
       <<: *business-db-env
       INVOICE_INTELLIGENCE_FILE_STORAGE_BACKEND: ${FILE_STORAGE_BACKEND:-local}
+      INVOICE_INTELLIGENCE_FILE_STORAGE_ROOT: /var/lib/invoice-intelligence/documents
       INVOICE_INTELLIGENCE_OBJECT_STORAGE_ENDPOINT_URL: ${OBJECT_STORAGE_ENDPOINT_URL:-http://object-storage:9000}
       INVOICE_INTELLIGENCE_OBJECT_STORAGE_ACCESS_KEY: ${OBJECT_STORAGE_APP_ACCESS_KEY:-${MINIO_ROOT_USER:-}}
       INVOICE_INTELLIGENCE_OBJECT_STORAGE_SECRET_KEY_FILE: /run/secrets/object_storage_app_secret_key
-    depends_on: {postgres: {condition: service_healthy}, migration: {condition: service_completed_successfully}}
-    secrets: [postgres_business_password, object_storage_app_secret_key]
+      INVOICE_INTELLIGENCE_CHECKPOINT_BACKEND: postgres
+      INVOICE_INTELLIGENCE_POSTGRES_CHECKPOINT_DSN: "postgresql://${POSTGRES_CHECKPOINT_USER:?set POSTGRES_CHECKPOINT_USER}@postgres-checkpoint:5432/${POSTGRES_CHECKPOINT_DB:?set POSTGRES_CHECKPOINT_DB}"
+      INVOICE_INTELLIGENCE_POSTGRES_CHECKPOINT_PASSWORD_FILE: /run/secrets/postgres_checkpoint_password
+      INVOICE_INTELLIGENCE_EXTRACTION_ASYNC_ENABLED: "true"
+    depends_on: {postgres: {condition: service_healthy}, postgres-checkpoint: {condition: service_healthy}, migration: {condition: service_completed_successfully}}
+    secrets: [postgres_business_password, postgres_checkpoint_password, object_storage_app_secret_key]
     ports: ["${API_PORT:-8000}:8000"]
     volumes: [invoice_documents:/var/lib/invoice-intelligence/documents, ./logs:/app/logs]
     healthcheck: {test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=2)"], interval: 10s, timeout: 5s, retries: 10, start_period: 20s}
+    deploy: {resources: {limits: {cpus: "2.0", memory: 2G}}}
+  extraction-worker:
+    build: {context: ., dockerfile: Dockerfile}
+    profiles: [core]
+    restart: unless-stopped
+    command: [python, -m, invoice_intelligence.workers.extraction]
+    env_file: [.env]
+    environment:
+      <<: *business-db-env
+      INVOICE_INTELLIGENCE_EXTRACTION_WORKER_ID: "${EXTRACTION_WORKER_ID:-extraction-1}"
+      INVOICE_INTELLIGENCE_CHECKPOINT_BACKEND: postgres
+      INVOICE_INTELLIGENCE_POSTGRES_CHECKPOINT_DSN: "postgresql://${POSTGRES_CHECKPOINT_USER:?set POSTGRES_CHECKPOINT_USER}@postgres-checkpoint:5432/${POSTGRES_CHECKPOINT_DB:?set POSTGRES_CHECKPOINT_DB}"
+      INVOICE_INTELLIGENCE_POSTGRES_CHECKPOINT_PASSWORD_FILE: /run/secrets/postgres_checkpoint_password
+      INVOICE_INTELLIGENCE_EXTRACTION_ASYNC_ENABLED: "true"
+      INVOICE_INTELLIGENCE_FILE_STORAGE_BACKEND: ${FILE_STORAGE_BACKEND:-local}
+      INVOICE_INTELLIGENCE_FILE_STORAGE_ROOT: /var/lib/invoice-intelligence/documents
+      INVOICE_INTELLIGENCE_OBJECT_STORAGE_ENDPOINT_URL: ${OBJECT_STORAGE_ENDPOINT_URL:-http://object-storage:9000}
+      INVOICE_INTELLIGENCE_OBJECT_STORAGE_ACCESS_KEY: ${OBJECT_STORAGE_APP_ACCESS_KEY:-${MINIO_ROOT_USER:-}}
+      INVOICE_INTELLIGENCE_OBJECT_STORAGE_SECRET_KEY_FILE: /run/secrets/object_storage_app_secret_key
+    depends_on: {postgres: {condition: service_healthy}, postgres-checkpoint: {condition: service_healthy}, migration: {condition: service_completed_successfully}}
+    secrets: [postgres_business_password, postgres_checkpoint_password, object_storage_app_secret_key]
+    volumes: [invoice_documents:/var/lib/invoice-intelligence/documents, ./logs:/app/logs]
+    healthcheck: {test: [CMD, python, -m, invoice_intelligence.workers.runtime_health, --worker-id-env, INVOICE_INTELLIGENCE_EXTRACTION_WORKER_ID], interval: 15s, timeout: 5s, retries: 3}
     deploy: {resources: {limits: {cpus: "2.0", memory: 2G}}}
   memory-admission:
     build: {context: ., dockerfile: Dockerfile}
@@ -110,6 +151,7 @@ services:
       <<: *business-db-env
       INVOICE_INTELLIGENCE_INDEX_PROJECTION_WORKER_ENABLED: "true"
       INVOICE_INTELLIGENCE_INDEX_PROJECTION_WORKER_ID: "${INDEX_PROJECTION_WORKER_ID:?set stable worker id}"
+      INVOICE_INTELLIGENCE_INDEX_PROJECTION_WORKER_TENANT_IDS: "${INDEX_PROJECTION_WORKER_TENANT_IDS:?set worker tenant ids}"
     depends_on: {postgres: {condition: service_healthy}, migration: {condition: service_completed_successfully}}
     secrets: [postgres_business_password]
     volumes: [./logs:/app/logs]
@@ -159,20 +201,6 @@ services:
     ports: ["${MINIO_API_PORT:-9000}:9000", "${MINIO_CONSOLE_PORT:-9001}:9001"]
     healthcheck: {test: [CMD, curl, -f, http://127.0.0.1:9000/minio/health/live], interval: 10s, timeout: 5s, retries: 10}
     deploy: {resources: {limits: {cpus: "2.0", memory: 2G}}}
-  object-storage-init:
-    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
-    profiles: [object-storage]
-    restart: "no"
-    depends_on: {object-storage: {condition: service_healthy}}
-    environment:
-      MINIO_ENDPOINT: http://object-storage:9000
-      MINIO_ROOT_USER: "${MINIO_ROOT_USER:?set minio user}"
-      ORIGINALS_BUCKET: ${OBJECT_STORAGE_ORIGINALS_BUCKET:-invoice-originals}
-      RENDERED_BUCKET: ${OBJECT_STORAGE_RENDERED_BUCKET:-invoice-rendered}
-      DERIVED_TEXT_BUCKET: ${OBJECT_STORAGE_DERIVED_TEXT_BUCKET:-invoice-derived-text}
-    secrets: [minio_root_password]
-    volumes: [./deploy/minio/init-storage.sh:/init-storage.sh:ro]
-    entrypoint: [/bin/sh, /init-storage.sh]
   storage-lifecycle-worker:
     build: {context: ., dockerfile: Dockerfile}
     profiles: [object-storage]
@@ -197,13 +225,18 @@ services:
     profiles: [vector]
     restart: unless-stopped
     command: [milvus, run, standalone]
-    environment: {ETCD_ENDPOINTS: etcd:2379, MINIO_ADDRESS: object-storage:9000}
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: object-storage:9000
+      MINIO_ACCESS_KEY_ID: "${MINIO_ROOT_USER:?set minio user}"
+      MINIO_SECRET_ACCESS_KEY: "${MINIO_ROOT_PASSWORD:?set minio password}"
     depends_on: {etcd: {condition: service_healthy}, object-storage: {condition: service_healthy}}
     volumes: [milvus_data:/var/lib/milvus]
     healthcheck: {test: [CMD, curl, -f, http://127.0.0.1:9091/healthz], interval: 15s, timeout: 10s, retries: 10, start_period: 30s}
     deploy: {resources: {limits: {cpus: "4.0", memory: 4G}}}
   attu:
     image: zilliz/attu:v2.5
+    
     profiles: [vector-dev]
     restart: unless-stopped
     environment: {MILVUS_URL: milvus:19530}
@@ -266,6 +299,7 @@ services:
     deploy: {resources: {limits: {cpus: "1.0", memory: 1G}}}
 secrets:
   postgres_business_password: {file: ./secrets/postgres_business_password.txt}
+  postgres_checkpoint_password: {file: ./secrets/postgres_checkpoint_password.txt}
   postgres_auth_password: {file: ./secrets/postgres_auth_password.txt}
   keycloak_admin_password: {file: ./secrets/keycloak_admin_password.txt}
   minio_root_password: {file: ./secrets/minio_root_password.txt}
@@ -273,6 +307,7 @@ secrets:
     file: ${OBJECT_STORAGE_APP_SECRET_FILE:-./secrets/minio_root_password.txt}
 volumes:
   postgres_business_data:
+  postgres_checkpoint_data:
   postgres_auth_data:
   etcd_data:
   object_storage_data:

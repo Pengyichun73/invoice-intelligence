@@ -96,8 +96,17 @@ class OIDCJWTAuthContextProvider:
                     if not isinstance(raw_key, dict):
                         continue
                     kid = raw_key.get("kid")
-                    if isinstance(kid, str) and kid:
+                    if (
+                        not isinstance(kid, str)
+                        or not kid
+                        or raw_key.get("use", "sig") != "sig"
+                        or raw_key.get("alg") not in self._algorithms
+                    ):
+                        continue
+                    try:
                         resolved[kid] = jwt.PyJWK.from_dict(raw_key).key
+                    except jwt.PyJWTError:
+                        continue
                 if not resolved:
                     raise ValueError("OIDC JWKS contains no usable signing keys")
                 self._keys = resolved

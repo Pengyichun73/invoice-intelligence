@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import Any
 
-from sqlalchemy import Engine, delete, func, select, update
+from sqlalchemy import Engine, delete, func, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import SQLAlchemyError
@@ -1313,11 +1313,24 @@ class SQLAlchemyFieldAliasCandidateRepository:
                         == canonical_field_path
                     )
                 if after_candidate_id is not None:
+                    cursor_row = session.scalar(
+                        select(FieldAliasCandidateRow).where(
+                            FieldAliasCandidateRow.scope == FieldAliasCandidateScope.TENANT.value,
+                            FieldAliasCandidateRow.tenant_id == tenant_id,
+                            FieldAliasCandidateRow.candidate_id == after_candidate_id,
+                        )
+                    )
+                    if cursor_row is None:
+                        return ()
                     statement = statement.where(
-                        FieldAliasCandidateRow.candidate_id > after_candidate_id
+                        tuple_(FieldAliasCandidateRow.updated_at, FieldAliasCandidateRow.candidate_id)
+                        < (cursor_row.updated_at, after_candidate_id)
                     )
                 rows = session.scalars(
-                    statement.order_by(FieldAliasCandidateRow.candidate_id).limit(limit)
+                    statement.order_by(
+                        FieldAliasCandidateRow.updated_at.desc(),
+                        FieldAliasCandidateRow.candidate_id.desc(),
+                    ).limit(limit)
                 ).all()
                 return tuple(self._candidate_from_row(row) for row in rows)
         except (ValueError, SQLAlchemyError) as exc:

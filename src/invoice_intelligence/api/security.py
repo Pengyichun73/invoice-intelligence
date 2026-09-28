@@ -17,6 +17,7 @@ from invoice_intelligence.application.services.authorization import (
     AuthorizationPolicy,
     Permission,
 )
+from invoice_intelligence.config.logging import safe_failure_fields
 
 _LOGGER = logging.getLogger(__name__)
 _IDENTITY_HEADERS = frozenset({"x-tenant-id", "tenant-id", "x-reviewer-id", "reviewer-id"})
@@ -181,7 +182,11 @@ async def _authenticate(request: Request, dependencies: ApiDependencies) -> Auth
     authorization = request.headers.get("Authorization")
     if authorization is None:
         settings = dependencies.settings
-        if settings.environment.value == "development" and settings.dev_tenant_id:
+        if (
+            settings.auth_mode == "development"
+            and settings.environment.value == "development"
+            and settings.dev_tenant_id
+        ):
             return AuthContext(
                 subject="local-developer",
                 tenant_id=settings.dev_tenant_id,
@@ -239,7 +244,13 @@ async def _audit(
     except Exception as exc:
         _LOGGER.error(
             "security_audit_persistence_failed",
-            extra={"error_type": type(exc).__name__, "trace_id": trace_id},
+            extra={
+                "error_type": type(exc).__name__,
+                "trace_id": trace_id,
+                "tenant_id": context.tenant_id if context else None,
+                "operation": "security_audit",
+                **safe_failure_fields(exc),
+            },
         )
 
 

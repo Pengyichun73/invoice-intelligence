@@ -7,8 +7,12 @@ from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
 from hashlib import sha256
 from hmac import compare_digest
-from typing import Generic, TypeVar
+from io import BytesIO
+from typing import Generic, Literal, TypeVar, cast
 from uuid import uuid4
+
+from PIL import Image
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from invoice_intelligence.application.errors import DocumentIntegrityError
 from invoice_intelligence.application.ports.document_processor import DocumentProcessor
@@ -31,6 +35,7 @@ from invoice_intelligence.application.services.field_semantic_catalog import (
 )
 from invoice_intelligence.application.services.multi_source_ocr_comparison import (
     DeterministicMultiSourceOCRComparisonService,
+    normalize_ocr_text,
 )
 from invoice_intelligence.domain.document import (
     DocumentProcessingLimits,
@@ -39,15 +44,19 @@ from invoice_intelligence.domain.document import (
     VisionImage,
 )
 from invoice_intelligence.domain.extraction import (
+    EvidenceSource,
     ExtractionAnomaly,
     ExtractionResult,
+    FieldEvidence,
+    OCRComparisonOutcome,
     OCRFieldObservation,
     OCRProviderStatus,
     PromptContextBudget,
     RawOCRResult,
+    Readability,
     VisionPromptContext,
 )
-from invoice_intelligence.domain.field_semantics import FieldBindingEvidence
+from invoice_intelligence.domain.field_semantics import FieldBindingEvidence, FieldBindingStatus
 
 InvoiceT = TypeVar("InvoiceT")
 _LOGGER = logging.getLogger(__name__)
@@ -76,6 +85,7 @@ class VisionExtractionService(Generic[InvoiceT]):
         prompt_context_budget: PromptContextBudget | None = None,
         privacy_telemetry: PrivacyTelemetry | None = None,
         artifact_service: DocumentArtifactService | None = None,
+        targeted_reread_mode: Literal["off", "shadow", "apply"] = "off",
     ) -> None:
         if not schema_version.strip() or schema_version != schema_version.strip():
             raise ValueError("schema_version must be non-empty and normalized")
@@ -99,6 +109,9 @@ class VisionExtractionService(Generic[InvoiceT]):
         self._prompt_context_budget = prompt_context_budget or PromptContextBudget()
         self._privacy_telemetry = privacy_telemetry
         self._artifact_service = artifact_service
+        if targeted_reread_mode not in {"off", "shadow", "apply"}:
+            raise ValueError("targeted_reread_mode must be off, shadow, or apply")
+        self._targeted_reread_mode = targeted_reread_mode
 
     async def extract(
         self,
@@ -107,9 +120,15 @@ class VisionExtractionService(Generic[InvoiceT]):
         tenant_id: str,
         prompt_context: VisionPromptContext | None = None,
         trace_id: str | None = None,
+        *,
+        include_ocr: bool = True,
+        persist_artifacts: bool = True,
+        targeted_reread_mode: Literal["off", "shadow", "apply"] | None = None,
     ) -> ExtractionResult[InvoiceT]:
         """Verify stored bytes, normalize pages, and request structured extraction."""
 
+        if targeted_reread_mode not in {None, "off", "shadow", "apply"}:
+            raise ValueError("targeted_reread_mode must be off, shadow, or apply")
         resolved_trace_id = trace_id or uuid4().hex
         with self._span(
             resolved_trace_id,
@@ -138,7 +157,7 @@ class VisionExtractionService(Generic[InvoiceT]):
                 inspected=inspected,
                 limits=self._limits,
             )
-            if self._artifact_service is not None:
+            if persist_artifacts and self._artifact_service is not None:
                 try:
                     await self._artifact_service.store_rendered(
                         tenant_id,
@@ -174,7 +193,7 @@ class VisionExtractionService(Generic[InvoiceT]):
                     images, output_schema, resolved_trace_id, tenant_id
                 )
             )
-            if self._ocr_provider is not None
+            if include_ocr and self._ocr_provider is not None
             else None
         )
         raw_ocr_tasks = tuple(
@@ -183,7 +202,7 @@ class VisionExtractionService(Generic[InvoiceT]):
                     provider, images, resolved_trace_id, tenant_id
                 )
             )
-            for provider in self._raw_ocr_providers
+            for provider in (self._raw_ocr_providers if include_ocr else ())
         )
         ocr_tasks = tuple(
             task
@@ -224,6 +243,11 @@ class VisionExtractionService(Generic[InvoiceT]):
                 result = await self._bind_field_labels(result, tenant_id)
             return await self._add_ocr_evidence(
                 result=result,
+                images=images,
+                output_schema=output_schema,
+                prompt_context=context,
+                persist_artifacts=persist_artifacts,
+                targeted_reread_mode=targeted_reread_mode,
                 legacy_ocr_task=legacy_ocr_task,
                 raw_ocr_tasks=raw_ocr_tasks,
                 tenant_id=tenant_id,
@@ -293,6 +317,11 @@ class VisionExtractionService(Generic[InvoiceT]):
         raw_ocr_tasks: Sequence[asyncio.Task[RawOCRResult]],
         tenant_id: str,
         document_id: str,
+        images: Sequence[VisionImage] = (),
+        output_schema: type[InvoiceT] | None = None,
+        prompt_context: VisionPromptContext | None = None,
+        persist_artifacts: bool = True,
+        targeted_reread_mode: Literal["off", "shadow", "apply"] | None = None,
     ) -> ExtractionResult[InvoiceT]:
         """Merge request-local OCR after Vision without changing source authority."""
 
@@ -307,7 +336,7 @@ class VisionExtractionService(Generic[InvoiceT]):
         if not raw_ocr_tasks:
             return result
         raw_results = tuple(await asyncio.gather(*raw_ocr_tasks))
-        if self._artifact_service is not None:
+        if persist_artifacts and self._artifact_service is not None:
             try:
                 await self._artifact_service.store_ocr(
                     tenant_id,
@@ -338,19 +367,305 @@ class VisionExtractionService(Generic[InvoiceT]):
                 reason_code="ocr_comparison.document_type_unavailable",
             )
         try:
-            return await comparison_service.compare(
+            compared = await comparison_service.compare(
                 tenant_id=tenant_id,
                 document_id=document_id,
                 document_type=facts.document_type,
                 result=result,
                 raw_results=raw_results,
             )
+            mode = targeted_reread_mode or self._targeted_reread_mode
+            if (
+                mode != "off"
+                and output_schema is not None
+                and prompt_context is not None
+            ):
+                compared = await self._targeted_reread(
+                    compared, images, output_schema, prompt_context,
+                    tenant_id, document_id, facts.document_type, raw_results,
+                    comparison_service, mode,
+                )
+            return self._reconcile_current_evidence(compared)
         except Exception as exc:
             return comparison_service.degrade(
                 result=result,
                 raw_results=raw_results,
                 reason_code=f"ocr_comparison.{type(exc).__name__.lower()}",
             )
+
+    async def _targeted_reread(
+        self,
+        result: ExtractionResult[InvoiceT],
+        images: Sequence[VisionImage],
+        output_schema: type[InvoiceT],
+        context: VisionPromptContext,
+        tenant_id: str,
+        document_id: str,
+        document_type: str,
+        raw_results: Sequence[RawOCRResult],
+        comparison_service: DeterministicMultiSourceOCRComparisonService[InvoiceT],
+        mode: Literal["off", "shadow", "apply"] | None = None,
+    ) -> ExtractionResult[InvoiceT]:
+        invoice = result.invoice
+        if not isinstance(invoice, BaseModel) or not context.focus_field_paths:
+            return result
+        conflicting = (
+            set(context.reviewed_examples.conflicting_field_paths)
+            if context.reviewed_examples is not None else set()
+        )
+        for path in context.focus_field_paths:
+            if path in conflicting or path not in type(invoice).model_fields:
+                continue
+            if getattr(invoice, path) is not None:
+                continue
+            comparisons = [
+                item for item in result.ocr_comparisons
+                if item.canonical_field_path == path
+            ]
+            observations = [
+                item for item in result.ocr_observations if item.field_path == path
+            ]
+            if len(comparisons) != 1 or len(observations) != 1:
+                continue
+            comparison, ocr = comparisons[0], observations[0]
+            if (
+                comparison.outcome is not OCRComparisonOutcome.OCR_ONLY
+                or comparison.conflicting_sources
+                or "ocr_comparison.provider_partial_unavailable" in comparison.reason_codes
+                or ocr.binding_status is not FieldBindingStatus.ACCEPTED
+                or ocr.bounding_box is None
+                or ocr.page_number is None
+                or len(ocr.candidate_values) != 1
+                or ocr.anomalies
+            ):
+                continue
+            page = next((item for item in images if item.page_number == ocr.page_number), None)
+            if page is None:
+                continue
+            try:
+                crop = self._crop_ocr_region(page, ocr.bounding_box)
+                focused = await self._provider.extract(
+                    images=(crop,), output_schema=output_schema,
+                    prompt_context=VisionPromptContext(
+                        focus_field_paths=(path,),
+                        field_semantic_catalog=context.field_semantic_catalog,
+                        budget=context.budget,
+                    ),
+                    document_id=document_id,
+                )
+                value = getattr(focused.invoice, path) if focused.invoice is not None else None
+                evidence = next(
+                    (item for item in focused.field_evidence if item.field_path == path),
+                    None,
+                )
+                if value is None or evidence is None or not self._reread_agrees(
+                    path, value, evidence, ocr, type(invoice)
+                ):
+                    continue
+                _LOGGER.info("targeted_reread_corrob", extra={"field_path": path})
+                if (mode or self._targeted_reread_mode) == "shadow":
+                    return result
+                payload = invoice.model_dump(mode="python")
+                payload[path] = value
+                amended = replace(
+                    result,
+                    invoice=cast(InvoiceT, type(invoice).model_validate(payload)),
+                    field_evidence=tuple(
+                        replace(
+                            item,
+                            candidate_values=evidence.candidate_values,
+                            page_number=evidence.page_number,
+                            readability=evidence.readability,
+                            ambiguous=False,
+                            validation_signals=(
+                                *evidence.validation_signals, "targeted_region_reread"
+                            ),
+                        ) if item.field_path == path else item
+                        for item in result.field_evidence
+                    ),
+                )
+                verified = await comparison_service.compare(
+                    tenant_id=tenant_id, document_id=document_id,
+                    document_type=document_type, result=amended,
+                    raw_results=raw_results,
+                )
+                reread_comparison = next(
+                    (item for item in verified.ocr_comparisons
+                     if item.canonical_field_path == path),
+                    None,
+                )
+                if (
+                    reread_comparison is None
+                    or reread_comparison.outcome is not OCRComparisonOutcome.CORROBORATED
+                    or reread_comparison.review_required
+                    or reread_comparison.conflicting_sources
+                ):
+                    return result
+                return verified
+            except Exception as exc:
+                _LOGGER.warning(
+                    "targeted_reread_degraded",
+                    extra={"field_path": path, "error_type": type(exc).__name__},
+                )
+                return result
+        return result
+
+    @staticmethod
+    def _crop_ocr_region(
+        page: VisionImage, box: tuple[float, float, float, float]
+    ) -> VisionImage:
+        left, top, right, bottom = box
+        if right <= left or bottom <= top:
+            raise ValueError("OCR region has no area")
+        with Image.open(BytesIO(page.content)) as image:
+            if image.size != (page.width, page.height):
+                raise ValueError("OCR region image dimensions do not match")
+            if left < 0 or top < 0 or right > page.width or bottom > page.height:
+                raise ValueError("OCR region is outside the current page")
+            margin = max(32, min(128, int(max(right - left, bottom - top))))
+            bounds = (
+                max(0, int(left) - margin), max(0, int(top) - margin),
+                min(page.width, int(right) + margin),
+                min(page.height, int(bottom) + margin),
+            )
+            if bounds[2] - bounds[0] < 32 or bounds[3] - bounds[1] < 32:
+                raise ValueError("OCR region is outside the current page")
+            if (
+                (bounds[2] - bounds[0]) * (bounds[3] - bounds[1])
+                > page.width * page.height * 0.5
+            ):
+                raise ValueError("OCR region is not sufficiently localized")
+            region = image.crop(bounds)
+            with BytesIO() as output:
+                region.save(output, format="PNG")
+                return VisionImage(
+                    content=output.getvalue(), mime_type="image/png",
+                    page_number=page.page_number,
+                    width=region.width, height=region.height,
+                )
+
+    @staticmethod
+    def _reread_agrees(
+        path: str,
+        value: object,
+        evidence: object,
+        ocr: OCRFieldObservation,
+        invoice_type: type[BaseModel],
+    ) -> bool:
+        if (
+            not isinstance(evidence, FieldEvidence)
+            or evidence.source is not EvidenceSource.VISUAL
+            or evidence.readability is not Readability.READABLE
+            or evidence.ambiguous
+            or evidence.page_number != ocr.page_number
+            or len(evidence.candidate_values) != 1
+        ):
+            return False
+        adapter: TypeAdapter[object] = TypeAdapter(invoice_type.model_fields[path].annotation)
+        try:
+            visual = adapter.validate_python(evidence.candidate_values[0])
+            observed = adapter.validate_python(ocr.candidate_values[0])
+        except (TypeError, ValueError, ValidationError):
+            return False
+        if visual != value:
+            return False
+        if isinstance(value, str):
+            return normalize_ocr_text(value).casefold() == normalize_ocr_text(
+                str(observed)
+            ).casefold()
+        return observed == value
+
+    @staticmethod
+    def _reconcile_current_evidence(
+        result: ExtractionResult[InvoiceT],
+    ) -> ExtractionResult[InvoiceT]:
+        invoice = result.invoice
+        if not isinstance(invoice, BaseModel):
+            return result
+        comparisons = {
+            item.canonical_field_path: item for item in result.ocr_comparisons
+        }
+        observations: dict[str, list[OCRFieldObservation]] = {}
+        for item in result.ocr_observations:
+            observations.setdefault(item.field_path, []).append(item)
+        updates: dict[str, object] = {}
+        reconciled_paths: set[str] = set()
+        for evidence in result.field_evidence:
+            path = evidence.field_path
+            if (
+                path not in type(invoice).model_fields
+                or getattr(invoice, path) is not None
+                or evidence.source is not EvidenceSource.VISUAL
+                or evidence.readability is not Readability.READABLE
+                or evidence.ambiguous
+                or evidence.page_number is None
+                or len(evidence.candidate_values) != 1
+            ):
+                continue
+            candidate = evidence.candidate_values[0].strip()
+            if not candidate or candidate.casefold() in {"null", "none", "n/a"}:
+                continue
+            comparison = comparisons.get(path)
+            if (
+                comparison is None
+                or comparison.outcome is not OCRComparisonOutcome.CORROBORATED
+                or comparison.review_required
+                or comparison.conflicting_sources
+                or len(comparison.vision_candidates) != 1
+                or len(comparison.ocr_candidates) != 1
+                or "ocr_comparison.provider_partial_unavailable" in comparison.reason_codes
+            ):
+                continue
+            bound = observations.get(path, [])
+            if len(bound) != 1:
+                continue
+            ocr = bound[0]
+            if (
+                ocr.binding_status is not FieldBindingStatus.ACCEPTED
+                or ocr.page_number != evidence.page_number
+                or ocr.bounding_box is None
+                or len(ocr.candidate_values) != 1
+                or ocr.anomalies
+            ):
+                continue
+            adapter: TypeAdapter[object] = TypeAdapter(type(invoice).model_fields[path].annotation)
+            try:
+                value = adapter.validate_python(candidate)
+                ocr_value = adapter.validate_python(ocr.candidate_values[0])
+            except (TypeError, ValueError, ValidationError):
+                continue
+            if value is None or ocr_value is None:
+                continue
+            if isinstance(value, str):
+                if normalize_ocr_text(value).casefold() != normalize_ocr_text(
+                    str(ocr_value)
+                ).casefold():
+                    continue
+            elif value != ocr_value:
+                continue
+            updates[path] = value
+            reconciled_paths.add(path)
+        if not updates:
+            return result
+        try:
+            payload = invoice.model_dump(mode="python")
+            payload.update(updates)
+            corrected = type(invoice).model_validate(payload)
+        except ValidationError:
+            return result
+        return replace(
+            result,
+            invoice=cast(InvoiceT, corrected),
+            field_evidence=tuple(
+                replace(
+                    item,
+                    validation_signals=(*item.validation_signals, "dual_source_reconciled"),
+                )
+                if item.field_path in reconciled_paths
+                else item
+                for item in result.field_evidence
+            ),
+        )
 
     async def _observe_legacy_ocr(
         self,

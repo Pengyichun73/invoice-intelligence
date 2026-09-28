@@ -384,6 +384,7 @@ class SQLAlchemyBusinessRepository:
                             updated_at=now,
                         )
                     )
+                    session.flush()
                     session.add(
                         DocumentRow(
                             document_id=document.document_id,

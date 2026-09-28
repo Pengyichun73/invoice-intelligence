@@ -52,6 +52,8 @@ class ExampleIndexProjectionService:
     candidate checksum is upserted again and no source occurrence counter is changed.
     """
 
+    VALUE_BLIND_INDEX_PREFIX = "field-pattern-v1-"
+
     def __init__(
         self,
         *,
@@ -407,6 +409,8 @@ class ExampleIndexProjectionService:
             or candidate.index_version != index_version
         ):
             raise ValueError("Redactor changed the reviewed-example scope")
+        if index_version.value.startswith(self.VALUE_BLIND_INDEX_PREFIX):
+            candidate = self._value_blind_candidate(candidate)
         sectioned_text = self._build_index_text(candidate)
         candidate = replace(candidate, redacted_index_text=sectioned_text)
         async with projection_heartbeat(
@@ -427,6 +431,19 @@ class ExampleIndexProjectionService:
         await self._projection_repository.mark_projected(
             example.tenant_id, example.example_id, index_version,
             projection.projection_checksum, lease.worker_id, lease.token,
+        )
+
+    @staticmethod
+    def _value_blind_candidate(candidate: ExampleCandidate) -> ExampleCandidate:
+        return replace(
+            candidate,
+            redacted_model_value=None,
+            redacted_reviewed_value=None,
+            redacted_correction_reason=(
+                "reviewed_correction"
+                if candidate.redacted_correction_reason is not None
+                else None
+            ),
         )
 
     async def _embed_dense(self, text: str) -> tuple[float, ...]:

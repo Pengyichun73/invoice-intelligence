@@ -32,6 +32,19 @@ class _RerankResponse(BaseModel):
     id: str
 
 
+class _RerankOutput(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    results: list[_RerankItem]
+
+
+class _RerankModernResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    output: _RerankOutput
+    request_id: str
+
+
 class QwenRerankingProvider:
     """Rerank sanitized candidate text; scores remain uncalibrated relevance values."""
 
@@ -114,34 +127,50 @@ class QwenRerankingProvider:
         except QwenPayloadPolicyError as exc:
             raise RemoteInferenceError(str(exc)) from exc
         top_n = min(limit, len(documents))
+        modern = self._model == "qwen3.7-text-rerank"
+        body = (
+            {
+                "model": self._model,
+                "input": {"query": query, "documents": documents},
+                "parameters": {"top_n": top_n, "instruct": self._instruct},
+            }
+            if modern
+            else {
+                "model": self._model,
+                "query": query,
+                "documents": documents,
+                "top_n": top_n,
+                "instruct": self._instruct,
+            }
+        )
         try:
             response = await self._client.rerank(
                 model=self._model,
-                body={
-                    "model": self._model,
-                    "query": query,
-                    "documents": documents,
-                    "top_n": top_n,
-                    "instruct": self._instruct,
-                },
+                body=body,
             )
         except QwenRemoteError as exc:
             raise RemoteInferenceError("Qwen rerank request failed") from exc
         payload = response.model_dump() if isinstance(response, BaseModel) else response
         try:
-            parsed = _RerankResponse.model_validate(payload)
+            if modern:
+                results = _RerankModernResponse.model_validate(payload).output.results
+            else:
+                parsed = _RerankResponse.model_validate(payload)
+                if parsed.model != self._model:
+                    raise RemoteInferenceError(
+                        "Qwen rerank response model does not match configuration"
+                    )
+                results = parsed.results
         except ValidationError as exc:
             raise RemoteInferenceError("Qwen rerank response Schema is invalid") from exc
-        if parsed.model != self._model:
-            raise RemoteInferenceError("Qwen rerank response model does not match configuration")
-        indexes = tuple(item.index for item in parsed.results)
+        indexes = tuple(item.index for item in results)
         if len(indexes) != len(set(indexes)) or len(indexes) > top_n:
             raise RemoteInferenceError("Qwen rerank response indexes are invalid")
         if any(index < 0 or index >= len(candidate_ids) for index in indexes):
             raise RemoteInferenceError("Qwen rerank response references an unknown candidate")
-        if any(not math.isfinite(item.relevance_score) for item in parsed.results):
+        if any(not math.isfinite(item.relevance_score) for item in results):
             raise RemoteInferenceError("Qwen rerank response contains a non-finite score")
         return tuple(
             (candidate_ids[item.index], float(item.relevance_score))
-            for item in parsed.results
+            for item in results
         )

@@ -147,7 +147,7 @@ class SQLAlchemyOCRTelemetry(StructuredLoggingOCRTelemetry):
                         event_id=uuid4().hex,
                         provider_event_id=event_id,
                         page_number=page.page_number,
-                        latency_ms=page.latency_ms,
+                        latency_ms=page.latency_ms if page.latency_ms is not None else 0.0,
                         status_code=page.status_code,
                         outcome=page.outcome,
                         text_box_count=page.text_box_count,
@@ -210,7 +210,12 @@ class SQLAlchemyOCRTelemetry(StructuredLoggingOCRTelemetry):
                 )
             ).one()
             average_page_latency = session.scalar(
-                select(func.coalesce(func.avg(OCRPageMetricEventRow.latency_ms), 0.0))
+                select(
+                    func.coalesce(
+                        func.avg(func.nullif(OCRPageMetricEventRow.latency_ms, 0.0)),
+                        0.0,
+                    )
+                )
             )
             comparison = session.execute(
                 select(

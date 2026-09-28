@@ -39,6 +39,8 @@ Postmortem source event 已具备幂等事实写入、独立治理 Application S
 `DocumentIngestionService -> FileStorage` 是唯一上传调用方向；API Router 只调用 Application
 Service。`bootstrap.py` 根据 Pydantic Settings 组装 Local 或 S3-compatible Adapter。原件、渲染图
 和派生文本通过固定 `ObjectKind` 映射到三个独立 private Bucket，客户端不能指定 Bucket/key。
+隔离 Compose 使用 Local Adapter 时，API 和提取 Worker 必须将同一 `invoice_documents` 卷
+作为相同的绝对存储根目录；否则上传成功后 Worker 仍可能找不到原件。
 S3 启动检查读取 Bucket ACL 与 Policy；`Allow` 的 Principal 数组包含通配符或使用
 `NotPrincipal` 时拒绝启动。该代码检查不能替代真实 S3 权限与匿名访问验收。
 
@@ -80,6 +82,13 @@ main            -> api + bootstrap + config (process entry/lifespan only)
 
 ## Authentication and authorization
 
+隔离验收使用 `compose.acceptance.yml` 中独立 Keycloak realm `invoice-acceptance`。
+浏览器端采用 Authorization Code + PKCE，令牌仅保留在会话存储；API 仍通过
+`OIDCJWTAuthContextProvider` 校验签名和 claim，并以既有 RBAC 决定权限。
+OIDC 模式禁止缺少 Bearer Token 时回退到固定 `local-developer` 身份。
+角色成员关系由 Keycloak 管理，PostgreSQL 只保存业务/审计事实。
+隔离环境已核验两名独立账号的 PKCE 登录、JWT 签名及角色隔离；这不等于审核、准入或检索闭环验收。
+
 HTTP 安全链固定为 `Bearer Token -> OIDCJWTAuthContextProvider -> AuthContext ->
 AuthorizationPolicy -> TrustedTenantContext -> Application Service`。OIDC Adapter 位于
 Infrastructure，JWT SDK 不进入 Domain；API middleware 只安装可信上下文和执行路由权限检查，
@@ -87,6 +96,8 @@ Router 仍只调用 Application Service。既有 Memory Service 权限检查继�
 
 Token 的签名、算法、过期时间、签发时间、issuer 和 audience 必须通过验证，Keycloak
 `realm_access`/目标 client `resource_access` roles 与 scope 由确定性 Policy 映射为权限。
+JWKS 只导入允许算法的签名密钥，忽略同一文档中的加密密钥；单个不支持的密钥不得
+阻断有效签名密钥的加载。
 `tenant_id` 和 `reviewer_id` 只读自可信 claim，普通 Header、Query 和 Body 无权覆盖。
 生产配置禁止 demo tenant、HTTP issuer/JWKS 或关闭 TLS 验证。
 
@@ -96,6 +107,24 @@ Token 的签名、算法、过期时间、签发时间、issuer 和 audience 必
 不进入日志。
 
 ## Deterministic workflow
+
+记忆增强沿用现有单一 Workflow：召回的合格案例仅形成值盲字段模式，已批准字段目录提供
+正负别名；历史字段值和自由文本纠错原因不进入第二次 Vision Prompt。新建
+`field-pattern-v1-` 索引版本时派生 Milvus 投影不含历史字段值，审核事实仍只在 PostgreSQL。
+OCR 当前页唯一绑定区域可触发一次受限裁剪重读，默认 `off`，`shadow` 不改结果，`apply`
+须再通过当前证据核对、OCR 重比较和原确定性 Validator。该代码入口尚未通过真实样本收益
+验收，生产路由不得启用。隔离标注 JSONL 的身份字段只是声明，不替代 OIDC/RBAC 审计。
+生产目标暂为独立 Linux 单机，异机加密备份未就绪前禁止生产灰度。
+
+隔离 Compose 的 HTTP API 只在业务 PostgreSQL 同一事务登记 `extraction_runs` 与
+`extraction_work_items`，立即返回 `received` 和 `run_id`。独立 `extraction-worker` 通过
+PostgreSQL claim/lease 领取 start/resume 任务，使用共享 PostgreSQL Checkpointer 执行下方
+同一个 Graph；重启时按 `thread_id` 的现有 checkpoint 继续。队列租约更新与完成采用 claim token
+条件写入，审核恢复还固定提交时的 checkpoint ID，不能把旧决定送入下一轮 interrupt；
+业务结果仍由原有 `run_id` write-once 规则保护。审核提交先验证可信审核人和任务租约，
+并在入队事务中再次锁定审核任务校验 revision、租约与 Reviewer；待执行恢复期间禁止取消、
+转交、重新领取或过期回收。入队后返回 `execution_status=queued`；页面按 `run_id` 查询权威结果。开发机默认
+同步路径不变。该异步路径的迁移和双进程恢复尚未隔离环境验收。
 
 ```text
 prepare_document
@@ -196,6 +225,13 @@ OCR 是 application port，Composition Root 在显式启用时构造 Infrastruct
 Checkpoint 仅保留字段候选、来源引用、页码、位置、未校准分数和原因码等技术摘要，不保存图片、
 Base64、完整 OCR 响应或原始行文本，也不把技术元数据写入 `InvoiceExtraction`。
 
+隔离 Compose 的 `compose.ocr-gpu.yml` 可单独部署 GPU OCR，沿用版本化 YAML、`gpu:0`
+和容器内 8077；Worker 通过 `http://ocr:8077` 调用，不向主机发布 OCR 端口。
+未启用覆盖文件时保持 `http://host.docker.internal:8077`，以兼容现有宿主 PaddleX。
+`scripts/manage-acceptance.ps1` 负责选择一种路径及统一启动/停止 API、Worker 和依赖；
+不能同时运行两份 GPU OCR。Docker 镜像使用官方 PaddleX 基础镜像并升级到项目固定的
+PaddleX/PaddleOCR 版本；新镜像尚须现场构建及 OCR 文本框验收，配置存在不等于服务可用。
+
 本地 PaddleOCR 运行基线固定为独立 `.venv-ocr`、`gpu:0`、回环地址
 `http://127.0.0.1:8188`、PP-OCRv6 Small 检测/识别模型及版本化 Pipeline 配置
 `conf/ocr/ppocrv6_small_v1.yaml`，详见 [`local-ocr.md`](local-ocr.md)。不要使用
@@ -207,6 +243,10 @@ OCR 不得直接写入业务 Entity 或覆盖当前图片证据；比对冲突�
 人工审核。审核请求展示有界的 Vision/OCR 来源、候选、页码、位置和 reason codes；OCR-only
 候选只供人工选择。OCR 不可用形成 `unavailable` 摘要且不扣分，集中绑定或比对异常形成
 `unresolved` 并进入审核，两者均不会因 OCR 故障把 Workflow 标记为 failed。
+
+历史审核案例的模板相似度不是发票身份；当前二次 Vision Prompt 仍含历史脱敏值，后续应改为
+已审批的值盲字段模式提示、当前图片区域定向重读和逐字段独立验收，详见
+[`memory-extraction-roadmap.md`](memory-extraction-roadmap.md)。
 Composition Root 可同时注入固定本地 Adapter 与
 `INVOICE_INTELLIGENCE_OCR_REMOTE_PROVIDERS` 中启用的 PaddleX-compatible Adapter；远程配置按
 唯一 `provider_name` 排序，各 Provider 独立限流、重试与熔断，Application Service 按配置序列
@@ -282,6 +322,13 @@ Catalog Version 和 revision；Conflict 只允许 `open -> resolved|dismissed`�
 当前 Schema 中已有的候选路径。Conflict 关闭不会修改 `InvoiceExtraction`、发票值、Admission
 或 Alias 状态，只写入重新评估任务。Admission、Alias、Conflict 的状态更新和 GovernanceAudit
 必须在同一 PostgreSQL 事务中提交；Milvus 清理/投影在事务外幂等执行。
+
+准入列表的可选 `run_id`、`field_path`，案例列表的 `run_id`、`field_path`，字段目录的标准字段路径
+及冲突列表的 `field_path` 均在 Repository 的租户约束和游标分页前应用。案例和准入的 Run ID 从
+保留的 `example_feedback` 来源事实匹配；合并案例的 canonical `run_id` 仍可能是首次来源。
+治理列表以业务更新时间
+或最近出现时间降序、资源 ID 降序稳定分页，游标只在同租户内解析。前端治理写入后保留筛选并重新
+读取权威列表与单条详情，不把批量响应中的失败项误当作已批准事实。
 
 所有需要二级审批的操作都拒绝原始客户审核人再次执行，包括关联案例或别名来源 Reviewer。相同
 Idempotency-Key 且语义一致时优先返回原决定和审计记录；语义不同返回 409；revision/CAS 过期
@@ -878,6 +925,13 @@ Alias。实现保持 `pymilvus>=2.6,<3.0` 约束；升级 Client major version �
 执行且跳过仍在运行的 PID。production 默认仅输出标准输出，部署方可显式启用文件输出。
 当前 Compose 显式开启文件输出并绑定宿主机目录，可用 `LOG_FILE_ENABLED=false` 关闭。
 文件输出复用现有字段白名单和 JSON formatter；它不是 PostgreSQL 审计事实源。
+应用日志时间戳以 `+08:00` 上海时间输出，诊断器按 ISO 8601 时区偏移比较时间；
+API 异常处理器记录的 5xx 仅附加可信 Trace/租户、HTTP 方法与固定路由模板、状态码、耗时、包装和驱动异常类型、
+连接失效标记及合法 SQLSTATE；安全审计持久化失败使用同一低敏分类。日志和诊断包均不输出
+SQL 语句、参数或异常正文。422 只附加错误数量和首个错误类型。SQLSTATE 缺失不等于依赖正常；
+旧日志不会回填。
+Compose PostgreSQL 仅在内部网络提供 5432；主机进程不能用 `localhost:5432` 访问该容器，
+除非运维明确配置仅本机可见的端口映射。
 
 `invoice_intelligence.diagnostics` 是本地只读诊断入口。它从单个有大小上限的 JSONL 日志文件中
 或项目 `logs/` 下各组件的主文件/轮转文件中按 Trace、租户和可选时间窗筛选事件，
@@ -1064,9 +1118,15 @@ InvoiceExtraction result -> TransactionCandidate -> versioned rule advisory
 生成正向字段值假设。
 
 `ExampleScope` 现在精确包含 `tenant_id`、`document_type`、`field_path`、`schema_version` 和
-`catalog_version`。`template_fingerprint` 是可选精确 Scalar Filter；`not_before` 是从
+`catalog_version`。`template_fingerprint` 保留为案例元数据，不参与硬过滤；`not_before` 是从
 `last_seen_at` 派生的配置化时间窗口，两者都不得从历史值推断。Query Rewrite 接收同一 Catalog
 Scope，但无权修改。Milvus 召回后 PostgreSQL 再次校验 `approved + is_reviewed + is_valid`。
+默认最多检索固定的 19 个发票字段；Qwen 重排适配器按模型选择兼容或原生接口及响应 Schema。
+在现有 Vision 提取服务内，字段级 OCR 比对之后可受限核对当前图片的视觉候选与独立 OCR 候选：
+仅单一可读候选、同页、已接受字段绑定、OCR 定位存在、无冲突且 Schema 可解析时补齐 `null`，
+再交由原确定性 Validator 执行格式和业务规则。OCR 不可用或仅历史案例命中时保持原结果。
+有审核案例的第二次 Vision 调用只增加基线待审且召回案例的字段路径提示，不增 Workflow 节点，
+不将历史值当作本次字段证据。记忆收益需相对无记忆的 Vision+OCR 变体验证，不能用召回数代替。
 
 ### 事实与派生数据职责
 
@@ -1134,6 +1194,8 @@ Vue 3 前端采用顶部双层导航，不使用桌面常驻侧边栏。一级�
 429/503/409 等状态统一使用可读中文提示，并在冲突、准入和别名决定成功后展示后端返回的
 Trace ID。人工修正根据固定 Schema 使用日期/日期时间控件并支持显式 `null`；422 诊断只对白名单
 canonical 字段和已知错误类型做本地化映射，页面自动定位首个错误且不展示完整远端诊断。
+Run 字段弹窗只读现有租户授权的提取结果和准入列表，不生成 ReviewedExample；未审核字段只能标注
+为提取结果。日期仅在界面格式化为 `YYYY-MM-DD HH:mm:ss`，API 保持 ISO 8601 时区契约。
 
 API Client 通过并发计数向 App Shell 发布真实 HTTP 活动，顶部不确定进度条不得解释为 Workflow、
 Worker 或 Milvus 投影进度。全局通知只消费前端白名单错误文案和受信 `X-Trace-ID`，不展示后端任意
@@ -1145,6 +1207,10 @@ Worker 或 Milvus 投影进度。全局通知只消费前端白名单错误文�
 App Shell 使用内置视图白名单维护 Hash 与浏览器历史，页面切换后更新标题并把焦点移动到主标题。
 治理对话框限制键盘焦点，提交期间禁止 Esc/遮罩关闭，结束后恢复触发控件焦点。所有过渡均支持
 `prefers-reduced-motion`，移动端保留 44px 以上的核心触控区域。
+
+本地 Vue 开发服务器的 `/api` 代理默认指向 Docker API 发布的 `http://[::1]:8000`，
+避免主机上另行运行的 `127.0.0.1:8000` Uvicorn 抢占同端口后导致请求未进入 Docker；
+`VITE_API_PROXY_TARGET` 可显式覆盖该目标。
 
 展示层通过集中 `displayLabel` 映射把后端稳定枚举转换为中文，不修改 Domain 或 HTTP 契约。
 状态筛选、案例类型、冲突类型、OCR 结果来源、投影状态、评估方案和审计操作均显示中文；
@@ -1230,8 +1296,8 @@ password file 的末尾 CR/LF，同时拒绝空值、内部换行和超长内容
 应用 S3 凭据由独立的 `object_storage_app_secret_key` Compose secret 挂载，示例默认引用开发
 MinIO 密钥文件；生产应提供最小权限凭据文件与独立 Access Key。生命周期 Worker 不依赖
 MinIO 初始化容器，开发 MinIO 场景仍须先创建 private Bucket。
-原业务 PostgreSQL 已在确认后从实际 `20260923_0031_storage_fk` 升至唯一源码 head
-`20260924_0044_code_harness_repair_route`；切换前归档再次恢复到独立库，关键事实、租户关联及
+原业务 PostgreSQL 已在 9 月 25 日从实际 `20260923_0031_storage_fk` 升至当时源码 head
+`20260924_0044_code_harness_repair_route`；本轮新增 `0045` 尚未迁移。切换前归档再次恢复到独立库，关键事实、租户关联及
 约束检查通过。另以独立 Compose project 运行 API、Index Worker、PostgreSQL 和 Milvus，
 验证 password file、健康检查与重启恢复；随后独立恢复 project 从校验归档恢复业务事实、
 独立 PostgreSQL Checkpointer 和 MinIO 对象，按 PostgreSQL 合格源重建两类 Milvus
@@ -1279,5 +1345,9 @@ Collection 的租户、版本、ID 与 projection checksum，并与 PostgreSQL �
 此结果不覆盖生产规模、断网恢复或备份恢复，不能宣称生产索引部署已完成。
 
 完整完成度与后续任务统一见 [`project-status.md`](project-status.md)。
+记忆收益逐样本评估由 `MemoryBenefitEvaluationService` 调用既有视觉提取、OCR、
+值盲案例检索和确定性 Validator；不写业务 Run、渲染/OCR 产物或检索 Trace。
+冻结真值必须覆盖当前图片的 19 字段，并与文档 checksum、运行版本及活动值盲索引一致。
+该服务只产出脱敏配对判定，尚未连接隔离批量调度或真实标注数据，不能作为生产晋升证据。
 后续模块化执行提示词见 [`codex-next-target-feature-prompt.md`](codex-next-target-feature-prompt.md)；
 它只用于编排验收和缺口修复，不改变架构边界或实体 Schema。

@@ -1,19 +1,26 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { AlertCircle, BrainCircuit, CheckCircle2, FileImage, FileText, LoaderCircle, Play, RefreshCw, Search, ShieldCheck, UploadCloud, X } from 'lucide-vue-next'
+import { AlertCircle, BrainCircuit, CheckCircle2, FileImage, FileText, List, LoaderCircle, Play, RefreshCw, Search, ShieldCheck, UploadCloud, X } from 'lucide-vue-next'
+import RunFieldsDialog from '../components/RunFieldsDialog.vue'
 import PageHeader from '../components/PageHeader.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import { invoiceApi } from '../api/invoice'
-import { displayLabel, fullText, localizedText } from '../api/client'
-import { buildReviewSubmission, focusReviewTarget, reviewInputMetadata } from './extractionReview'
+import { displayLabel, errorFeedback, formatFieldValue, fullText, localizedText } from '../api/client'
+import { buildReviewSubmission, buildReviewSubmissionEnvelope, focusReviewTarget, reviewInputMetadata } from './extractionReview'
 import { useNotifications } from '../composables/useNotifications'
 
 const emit = defineEmits(['navigate'])
 const notices = useNotifications()
 
-const state = reactive({ file: null, document: null, run: null, result: null, review: null, loading: false, error: '', reviewError: '', reviewFeedback: '', activity: '等待上传发票图片或 PDF', backendOnline: false })
+const state = reactive({
+  file: null, document: null, run: null, result: null, reviewTask: null, leaseToken: null,
+  reviewClaiming: false, reviewSubmitting: false, readOnlyReviewReason: '',
+  loading: false, error: '', reviewError: '', reviewFeedback: '',
+  activity: '等待上传发票图片或 PDF', backendOnline: false,
+})
 const inputRef = ref(null)
 const runQuery = ref('')
+const runDialogOpen = ref(false)
 const reviewValues = reactive({})
 const reviewReasons = reactive({})
 const reviewActions = reactive({})
@@ -23,17 +30,23 @@ const bindingSelections = reactive({})
 const bindingReasons = reactive({})
 const reviewTargets = new Map()
 let stopped = false
+const recentRunKey = 'invoice-intelligence-recent-run-id'
+function rememberRun(runId) {
+  runQuery.value = runId
+  try { sessionStorage.setItem(recentRunKey, runId) } catch {}
+}
 
-const reviewEntries = computed(() => state.review?.request?.fields || [])
+const reviewEntries = computed(() => state.reviewTask?.request?.fields || [])
 const reviewFields = computed(() => reviewEntries.value.filter((field) => field.field_path))
 const reviewNotices = computed(() => reviewEntries.value.filter((field) => !field.field_path))
-const reviewBindings = computed(() => state.review?.request?.field_bindings || [])
+const reviewBindings = computed(() => state.reviewTask?.request?.field_bindings || [])
 const extraction = computed(() => state.result?.result || null)
 const evidence = computed(() => extraction.value?.field_evidence || [])
 const fieldBindingEvidence = computed(() => extraction.value?.field_binding_evidence || [])
 const ocrComparisons = computed(() => extraction.value?.ocr_comparisons || [])
 const fieldPresence = computed(() => flattenInvoice(extraction.value?.invoice))
-const isReview = computed(() => state.run?.status === 'pending_review' && state.review)
+const isReview = computed(() => state.run?.status === 'pending_review' && state.reviewTask)
+const canSubmitReview = computed(() => isReview.value && state.reviewTask?.status === 'claimed' && state.leaseToken && !state.reviewSubmitting)
 const memoryAssist = computed(() => {
   const bindings = fieldBindingEvidence.value
   const normalizedLabels = bindings.filter((item) => item.observed_label && item.normalized_label && item.observed_label !== item.normalized_label)
@@ -55,7 +68,7 @@ const memoryAssist = computed(() => {
 })
 const stages = computed(() => {
   const done = ['pending_review', 'completed'].includes(state.run?.status)
-  const hasOcr = Boolean(extraction.value?.ocr_observations?.length || extraction.value?.raw_ocr_observations?.length || state.review?.request?.evidence_sources?.some((item) => item.source_type?.includes('ocr')))
+  const hasOcr = Boolean(extraction.value?.ocr_observations?.length || extraction.value?.raw_ocr_observations?.length || state.reviewTask?.request?.evidence_sources?.some((item) => item.source_type?.includes('ocr')))
   const hasBinding = Boolean(extraction.value?.field_binding_evidence?.length || reviewBindings.value.length)
   return [
     { label: '视觉识别', state: !state.run ? 'idle' : state.run.status === 'processing' ? 'active' : done ? 'done' : state.run.status },
@@ -113,17 +126,24 @@ function onFile(event) {
     notices.warning('文件格式不支持', '请选择 PNG、JPG、WEBP 图片或 PDF 文件。')
     return
   }
-  Object.assign(state, { file, document: null, run: null, result: null, review: null, error: '', activity: '文件已就绪' })
+  Object.assign(state, {
+    file, document: null, run: null, result: null, reviewTask: null, leaseToken: null,
+    readOnlyReviewReason: '', error: '', activity: '文件已就绪',
+  })
 }
 function clearFile() { state.file = null; if (inputRef.value) inputRef.value.value = '' }
 function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)) }
 async function pollRun() {
-  const deadline = Date.now() + 180000
-  while (!stopped && Date.now() < deadline) {
-    state.run = await invoiceApi.run(state.run.run_id)
+  while (!stopped) {
+    try { state.run = await invoiceApi.run(state.run.run_id) }
+    catch (error) {
+      if (![0, 503].includes(error.status)) throw error
+      state.activity = '暂时无法读取运行状态，正在重试；运行编号已保留'
+      await delay(3000)
+      continue
+    }
     if (state.run.status === 'pending_review') {
-      state.review = await invoiceApi.review(state.run.run_id)
-      hydrateReview()
+      await loadReviewTask(true)
       state.activity = '当前证据需要人工确认'
       return
     }
@@ -136,10 +156,13 @@ async function pollRun() {
       state.activity = state.run.failure_message || '处理流程失败'
       return
     }
+    if (!['received', 'processing'].includes(state.run.status)) {
+      state.activity = '后端返回了暂不支持的运行状态，请按 run_id 重新读取'
+      return
+    }
     state.activity = '等待后端报告实际处理状态...'
     await delay(1200)
   }
-  if (!stopped) throw new Error('处理超过 3 分钟，请稍后按 run_id 查询')
 }
 async function start() {
   if (!state.file || state.loading) return
@@ -148,6 +171,7 @@ async function start() {
     state.document = await invoiceApi.upload(state.file)
     state.activity = '已登记文件，启动确定性处理流程...'
     state.run = await invoiceApi.extract(state.document.document_id)
+    rememberRun(state.run.run_id)
     await pollRun()
     if (state.run?.status === 'completed') {
       notices.success('发票处理已完成', state.run.memory_status === 'failed_retryable'
@@ -159,9 +183,9 @@ async function start() {
       notices.error('发票处理失败', '业务流程未完成，请根据页面提示检查文件或稍后重试。')
     }
   } catch (error) {
-    state.error = error.message
+    state.error = errorFeedback(error).message
     state.activity = '请求失败，可重试'
-    notices.error('发票处理未完成', error.recovery ? `${error.message}。${error.recovery}` : '请求未完成，请稍后重试。')
+    notices.error('发票处理未完成', state.error)
   }
   finally { state.loading = false }
 }
@@ -170,11 +194,74 @@ async function loadRun() {
   state.loading = true; state.error = ''
   try {
     state.run = await invoiceApi.run(runQuery.value.trim())
+    rememberRun(state.run.run_id)
     if (state.run.status === 'completed') state.result = await invoiceApi.result(state.run.run_id)
-    if (state.run.status === 'pending_review') { state.review = await invoiceApi.review(state.run.run_id); hydrateReview() }
+    if (state.run.status === 'pending_review') await loadReviewTask(false)
     state.activity = '已读取后端运行状态'
-  } catch (error) { state.error = error.message }
+    if (['received', 'processing'].includes(state.run.status)) {
+      void pollRun().catch((error) => { state.error = errorFeedback(error).message })
+    }
+  } catch (error) { state.error = errorFeedback(error).message }
   finally { state.loading = false }
+}
+function clearReviewState() {
+  state.reviewTask = null
+  state.leaseToken = null
+  state.readOnlyReviewReason = ''
+  ;[reviewValues, reviewReasons, reviewActions, reviewNulls, reviewFieldErrors, bindingSelections, bindingReasons].forEach(clearMap)
+}
+async function loadReviewTask(shouldClaim) {
+  const identifier = state.run?.run_id
+  if (!identifier) return
+  const task = await invoiceApi.review(identifier)
+  state.reviewTask = task
+  state.leaseToken = null
+  state.readOnlyReviewReason = ''
+  hydrateReview()
+  if (!shouldClaim) {
+    if (task.status === 'claimed') state.readOnlyReviewReason = '该审核任务已被领取，当前页面没有可恢复的租约。请重新读取，待租约过期后再领取。'
+    else if (['submitted', 'cancelled'].includes(task.status)) state.readOnlyReviewReason = `审核任务已${task.status === 'submitted' ? '提交' : '取消'}，不能重复提交审核决定。`
+    return
+  }
+  if (!['pending_review', 'expired'].includes(task.status)) {
+    if (task.status === 'claimed') state.readOnlyReviewReason = '该审核任务已被其他页面领取，当前页面只读等待租约释放。'
+    else if (['submitted', 'cancelled'].includes(task.status)) state.readOnlyReviewReason = '审核任务已完成，不能重复提交审核决定。'
+    return
+  }
+  await claimReviewTask()
+}
+async function claimReviewTask() {
+  if (!state.reviewTask || !['pending_review', 'expired'].includes(state.reviewTask.status) || state.reviewClaiming) return
+  state.reviewClaiming = true
+  state.readOnlyReviewReason = ''
+  try {
+    const response = await invoiceApi.claimReview(state.reviewTask.review_id, state.reviewTask.revision)
+    state.reviewTask = response.task
+    state.leaseToken = response.lease_token || null
+    if (!state.leaseToken) {
+      state.readOnlyReviewReason = '后端未返回审核租约，当前页面只读，不能提交。'
+      return
+    }
+    hydrateReview()
+    state.activity = '审核任务已领取，可提交审核决定'
+  } catch (error) {
+    if (error.status === 409) {
+      clearReviewState()
+      await reloadReviewAfterConflict()
+      return
+    }
+    state.readOnlyReviewReason = error.message
+    throw error
+  } finally {
+    state.reviewClaiming = false
+  }
+}
+async function reloadReviewAfterConflict() {
+  if (!state.run?.run_id) return
+  state.run = await invoiceApi.run(state.run.run_id)
+  if (state.run.status === 'pending_review') await loadReviewTask(false)
+  else if (state.run.status === 'completed') state.result = await invoiceApi.result(state.run.run_id)
+  state.activity = '已读取最新审核状态'
 }
 function hydrateReview() {
   ;[reviewValues, reviewReasons, reviewActions, reviewNulls, reviewFieldErrors, bindingSelections, bindingReasons].forEach(clearMap)
@@ -190,13 +277,13 @@ function hydrateReview() {
   reviewBindings.value.forEach((item) => { bindingSelections[item.evidence_id] = ''; bindingReasons[item.evidence_id] = '' })
 }
 async function submitReview() {
-  if (!isReview.value) return
+  if (!canSubmitReview.value) return
   state.reviewError = ''; state.reviewFeedback = ''
   clearMap(reviewFieldErrors)
   let payload
   try {
     payload = buildReviewSubmission({
-      currentInvoice: state.review.current_invoice,
+      currentInvoice: state.reviewTask.current_invoice,
       reviewFields: reviewFields.value,
       reviewBindings: reviewBindings.value,
       reviewActions,
@@ -212,10 +299,21 @@ async function submitReview() {
     notices.warning('审核内容不完整', error.message)
     return
   }
-  state.loading = true; state.error = ''; state.activity = '正在提交审核决定...'
+  state.loading = true; state.reviewSubmitting = true; state.error = ''; state.activity = '正在提交审核决定...'
   try {
-    state.run = await invoiceApi.submitReview(state.run.run_id, payload)
-    state.review = null
+    const response = await invoiceApi.submitClaimedReview(
+      state.reviewTask.review_id,
+      buildReviewSubmissionEnvelope({
+        expectedRevision: state.reviewTask.revision,
+        leaseToken: state.leaseToken,
+        correction: payload,
+      }),
+    )
+    state.run = response.run
+    rememberRun(state.run.run_id)
+    state.reviewTask = response.task
+    state.leaseToken = null
+    clearMap(reviewFieldErrors)
     await pollRun()
     if (state.run?.status === 'pending_review') {
       const reason = reviewNotices.value.at(-1)?.reasons?.at(-1)
@@ -231,13 +329,26 @@ async function submitReview() {
       })
     }
   } catch (error) {
+    if (error.status === 409) {
+      clearReviewState()
+      try { await reloadReviewAfterConflict() } catch (refreshError) { state.error = refreshError.message }
+    }
     showReviewError(error.message, null, error.fieldErrors)
     state.activity = '审核提交失败，可修正后重试'
     notices.error('审核提交未完成', error.recovery ? `${error.message}。${error.recovery}` : '审核尚未保存，请修正后重试。')
   }
-  finally { state.loading = false }
+  finally {
+    state.reviewSubmitting = false
+    state.loading = false
+  }
 }
-onMounted(async () => { try { await invoiceApi.health(); state.backendOnline = true } catch { state.backendOnline = false } })
+onMounted(async () => {
+  try { await invoiceApi.health(); state.backendOnline = true } catch { state.backendOnline = false }
+  try {
+    const recentRun = sessionStorage.getItem(recentRunKey)
+    if (recentRun && !state.run) { runQuery.value = recentRun; await loadRun() }
+  } catch {}
+})
 onBeforeUnmount(() => { stopped = true })
 </script>
 
@@ -263,7 +374,7 @@ onBeforeUnmount(() => { stopped = true })
         </button>
         <div class="button-row"><button v-if="state.file" class="secondary-btn" @click="clearFile"><X :size="16" />移除</button><button class="primary-btn grow" :disabled="!state.file || state.loading" @click="start"><LoaderCircle v-if="state.loading" class="spin" :size="16" /><Play v-else :size="16" />开始提取</button></div>
         <div class="lookup"><label>按 run_id 查询<input v-model="runQuery" placeholder="run_..." @keyup.enter="loadRun" /></label><button class="icon-btn" title="查询运行" :disabled="state.loading" @click="loadRun"><Search :size="17" /></button></div>
-        <dl v-if="state.run" class="meta-list"><div><dt>处理状态</dt><dd><StatusBadge :value="state.run.status" /></dd></div><div><dt>校验结果</dt><dd><StatusBadge v-if="state.run.validation_route" :value="state.run.validation_route" /><span v-else>未报告</span></dd></div><div><dt>记忆状态</dt><dd><StatusBadge v-if="state.run.memory_status" :value="state.run.memory_status" /><span v-else>未创建</span></dd></div></dl>
+        <dl v-if="state.run" class="meta-list"><div><dt>运行编号</dt><dd><code>{{ state.run.run_id }}</code></dd></div><div><dt>处理状态</dt><dd><StatusBadge :value="state.run.status" /></dd></div><div><dt>校验结果</dt><dd><StatusBadge v-if="state.run.validation_route" :value="state.run.validation_route" /><span v-else>未报告</span></dd></div><div><dt>记忆状态</dt><dd><StatusBadge v-if="state.run.memory_status" :value="state.run.memory_status" /><span v-else>未创建</span></dd></div></dl>
         <details v-if="state.run" class="technical-details">
           <summary>查看运行与恢复详情</summary>
           <dl class="meta-list">
@@ -275,7 +386,7 @@ onBeforeUnmount(() => { stopped = true })
       </section>
 
       <section class="surface result-surface">
-        <header class="section-head"><div><span>提取结果</span><h2>结构化结果与证据</h2></div><RefreshCw :size="18" /></header>
+        <header class="section-head"><div><span>提取结果</span><h2>结构化结果与证据</h2></div><button v-if="state.run?.status === 'completed'" class="secondary-btn" @click="runDialogOpen = true"><List :size="16" />查看本 Run 全部字段</button></header>
         <div v-if="!extraction && !isReview" class="empty-inline"><FileText :size="28" /><strong>等待后端响应</strong><span>不会虚构 OCR、Retrieval 或字段绑定进度。</span></div>
         <template v-if="extraction">
           <div class="metric-row"><div><span>字段总数</span><strong>{{ fieldPresence.length }}</strong></div><div><span>已识别</span><strong>{{ fieldPresence.filter((item) => item.present).length }}</strong></div><div><span>异常</span><strong>{{ extraction.anomalies?.length || 0 }}</strong></div><div><span>字段证据</span><strong>{{ evidence.length }}</strong></div></div>
@@ -312,9 +423,9 @@ onBeforeUnmount(() => { stopped = true })
             <div v-if="memoryAssist.attention.length" class="memory-assist-warning"><AlertCircle :size="15" /><span>记忆只提供候选和提醒，当前证据冲突或字段不确定时仍需人工确认。</span></div>
           </section>
           <h3 class="subheading">完整字段结果</h3>
-          <div class="field-grid"><div v-for="field in fieldPresence" :key="field.path" class="field-value-row"><code>{{ field.path }}</code><strong>{{ fullText(field.value) }}</strong><StatusBadge :value="field.present ? 'completed' : 'unresolved'" /></div></div>
+          <div class="field-grid"><div v-for="field in fieldPresence" :key="field.path" class="field-value-row"><code>{{ field.path }}</code><strong>{{ formatFieldValue(field.path, field.value) }}</strong><StatusBadge :value="field.present ? 'completed' : 'unresolved'" /></div></div>
           <h3 class="subheading">字段证据</h3>
-          <div class="record-list"><article v-for="item in evidence" :key="item.field_path"><header><code>{{ item.field_path }}</code><span>{{ displayLabel(item.source, 'evidence_source') }} · 第 {{ item.page_number || '-' }} 页</span></header><p>{{ localizedText((item.validation_signals || []).join(' · ') || '无额外验证信号') }}</p><footer>候选 {{ item.candidate_values?.length || 0 }} 个 · 可读性 {{ item.readability || '未记录' }}</footer></article></div>
+          <div class="record-list"><article v-for="item in evidence" :key="item.field_path"><header><code>{{ item.field_path }}</code><span>{{ displayLabel(item.source, 'evidence_source') }} · 第 {{ item.page_number || '-' }} 页</span></header><p>{{ localizedText((item.validation_signals || []).join(' · ') || '无额外验证信号') }}</p><footer>候选 {{ item.candidate_values?.length || 0 }} 个 · 可读性 {{ displayLabel(item.readability, 'readability') }}</footer></article></div>
           <details class="technical-details" v-if="fieldBindingEvidence.length || ocrComparisons.length">
             <summary>查看字段绑定与多源技术证据</summary>
             <div class="record-list">
@@ -341,7 +452,7 @@ onBeforeUnmount(() => { stopped = true })
             class="review-item"
             :class="{ 'review-item-error': reviewFieldErrors[reviewTarget('field', fieldKey(field))] }"
           >
-            <header><code>{{ fieldKey(field) }}</code><span class="full-value">{{ fullText(field.current_value) }}</span></header>
+            <header><code>{{ fieldKey(field) }}</code><span class="full-value">{{ formatFieldValue(fieldKey(field), field.current_value) }}</span></header>
             <p>{{ localizedText(field.reasons?.join('；') || '后端要求人工判断') }}</p>
             <div class="review-controls">
               <label :for="controlId('field', fieldKey(field), 'action')">审核决定</label>
@@ -395,9 +506,22 @@ onBeforeUnmount(() => { stopped = true })
           </article>
           <div v-if="state.reviewError" class="alert error review-submit-feedback" role="alert" aria-live="assertive"><AlertCircle :size="18" /><span>{{ state.reviewError }}</span></div>
           <div v-if="state.reviewFeedback" class="alert neutral review-submit-feedback" role="status" aria-live="polite"><ShieldCheck :size="18" /><span>{{ state.reviewFeedback }}</span></div>
-          <button type="button" class="primary-btn" :disabled="state.loading" @click="submitReview"><LoaderCircle v-if="state.loading" class="spin" :size="16" /><ShieldCheck v-else :size="16" />{{ state.loading ? '正在提交...' : '提交审核' }}</button>
+          <div v-if="state.readOnlyReviewReason" class="alert neutral review-submit-feedback" role="status">
+            <AlertCircle :size="18" /><span>{{ state.readOnlyReviewReason }}</span>
+          </div>
+          <div class="button-row">
+            <button
+              v-if="['pending_review', 'expired'].includes(state.reviewTask?.status)"
+              type="button"
+              class="secondary-btn"
+              :disabled="state.loading || state.reviewClaiming"
+              @click="claimReviewTask"
+            ><LoaderCircle v-if="state.reviewClaiming" class="spin" :size="16" /><ShieldCheck v-else :size="16" />{{ state.reviewClaiming ? '正在领取...' : '领取审核任务' }}</button>
+            <button type="button" class="primary-btn grow" :disabled="state.loading || !canSubmitReview" @click="submitReview"><LoaderCircle v-if="state.reviewSubmitting" class="spin" :size="16" /><ShieldCheck v-else :size="16" />{{ state.reviewSubmitting ? '正在提交...' : '提交审核' }}</button>
+          </div>
         </div>
       </section>
     </div>
+    <RunFieldsDialog :open="runDialogOpen" :run-id="state.run?.run_id || ''" :prefetched-result="state.result" @close="runDialogOpen = false" />
   </div>
 </template>

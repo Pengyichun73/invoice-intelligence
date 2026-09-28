@@ -120,6 +120,8 @@ async def list_admissions(
     ] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     cursor: Annotated[str | None, Query(min_length=1, max_length=64)] = None,
+    run_id: Annotated[str | None, Query(min_length=1, max_length=64)] = None,
+    field_path: Annotated[str | None, Query(min_length=1, max_length=512)] = None,
 ) -> MemoryAdmissionListResponse:
     return present_memory_admission_page(
         await service.list_admissions(
@@ -127,6 +129,8 @@ async def list_admissions(
             statuses=tuple(admission_statuses or tuple(MemoryAdmissionStatus)),
             limit=limit,
             cursor=cursor,
+            run_id=run_id,
+            field_path=field_path,
         )
     )
 
@@ -364,6 +368,7 @@ async def list_examples(
     context: TrustedTenantContextDependency,
     schema_version: Annotated[str | None, Query(min_length=1, max_length=64)] = None,
     field_path: Annotated[str | None, Query(min_length=1, max_length=512)] = None,
+    run_id: Annotated[str | None, Query(min_length=1, max_length=64)] = None,
     label_type: Annotated[ExampleLabelType | None, Query()] = None,
     is_valid: Annotated[bool | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
@@ -374,6 +379,7 @@ async def list_examples(
             context,
             schema_version=schema_version,
             field_path=field_path,
+            run_id=run_id,
             label_type=label_type,
             is_valid=is_valid,
             limit=limit,

@@ -7,14 +7,53 @@ from pydantic import ValidationError
 
 from invoice_intelligence.application.errors import VisionExtractionError
 from invoice_intelligence.domain.document import VisionImage
+from invoice_intelligence.domain.examples import (
+    ExampleLabelType,
+    IndexVersion,
+    RetrievalPolicyVersion,
+    ReviewedExamplePromptContext,
+    ReviewedExamplePromptReference,
+)
+from invoice_intelligence.domain.extraction import VisionPromptContext
 from invoice_intelligence.domain.invoice import InvoiceExtraction
 from invoice_intelligence.infrastructure.vision.structured import (
     build_extraction_result,
     build_vision_response_model,
+    compile_prompt_context_sections,
     schema_retry_instruction,
     validation_error_diagnostics,
     vision_error_diagnostics,
 )
+
+
+def test_reviewed_prompt_context_never_contains_prior_invoice_values() -> None:
+    reference = ReviewedExamplePromptReference(
+        example_id="example-1",
+        document_type="invoice",
+        field_path="invoice_number",
+        schema_version="3.0.0",
+        label_type=ExampleLabelType.CORRECTED,
+        model_value="PRIOR-ERROR-999",
+        reviewed_value="PRIOR-TRUTH-999",
+        correction_reason="previous value PRIOR-TRUTH-999",
+        index_version=IndexVersion("legacy-v1"),
+    )
+    reviewed = ReviewedExamplePromptContext(
+        trace_ids=("trace-1",),
+        verified_correct_examples=(),
+        reviewed_correction_examples=(reference,),
+        reviewed_negative_examples=(),
+        conflicting_field_paths=(),
+        retrieval_policy_version=RetrievalPolicyVersion("v1"),
+    )
+    sections = compile_prompt_context_sections(
+        VisionPromptContext(reviewed_examples=reviewed)
+    )
+    payload = "\n".join(section for _, section in sections)
+    assert "invoice_number" in payload
+    assert "PRIOR-ERROR-999" not in payload
+    assert "PRIOR-TRUTH-999" not in payload
+    assert "correction_reason" not in payload
 
 
 def _invoice_payload() -> dict[str, object | None]:

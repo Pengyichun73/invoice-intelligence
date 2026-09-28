@@ -8,7 +8,7 @@ from hashlib import sha256
 from typing import Any, cast
 from uuid import uuid4
 
-from sqlalchemy import Engine, case, delete, func, select, update
+from sqlalchemy import Engine, case, delete, exists, func, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import SQLAlchemyError
@@ -149,6 +149,7 @@ class SQLAlchemyExampleRepository:
         is_valid: bool | None,
         limit: int,
         after_example_id: str | None = None,
+        run_id: str | None = None,
     ) -> tuple[ReviewedExample, ...]:
         return await asyncio.to_thread(
             self._list_for_governance_sync,
@@ -159,6 +160,7 @@ class SQLAlchemyExampleRepository:
             is_valid,
             limit,
             after_example_id,
+            run_id,
         )
 
     async def get_for_governance(
@@ -715,6 +717,7 @@ class SQLAlchemyExampleRepository:
         is_valid: bool | None,
         limit: int,
         after_example_id: str | None,
+        run_id: str | None,
     ) -> tuple[ReviewedExample, ...]:
         self._require_text("tenant_id", tenant_id)
         if limit <= 0:
@@ -723,6 +726,7 @@ class SQLAlchemyExampleRepository:
             ("schema_version", schema_version),
             ("field_path", field_path),
             ("after_example_id", after_example_id),
+            ("run_id", run_id),
         ):
             if value is not None:
                 self._require_text(name, value)
@@ -737,6 +741,15 @@ class SQLAlchemyExampleRepository:
                     )
                 if field_path is not None:
                     statement = statement.where(ReviewedExampleRow.field_path == field_path)
+                if run_id is not None:
+                    statement = statement.where(
+                        exists().where(
+                            ExampleFeedbackRow.tenant_id == tenant_id,
+                            ExampleFeedbackRow.semantic_fingerprint
+                            == ReviewedExampleRow.semantic_fingerprint,
+                            ExampleFeedbackRow.run_id == run_id,
+                        )
+                    )
                 if label_type is not None:
                     statement = statement.where(
                         ReviewedExampleRow.label_type == label_type.value
@@ -744,11 +757,23 @@ class SQLAlchemyExampleRepository:
                 if is_valid is not None:
                     statement = statement.where(ReviewedExampleRow.is_valid.is_(is_valid))
                 if after_example_id is not None:
+                    cursor_row = session.scalar(
+                        select(ReviewedExampleRow).where(
+                            ReviewedExampleRow.tenant_id == tenant_id,
+                            ReviewedExampleRow.example_id == after_example_id,
+                        )
+                    )
+                    if cursor_row is None:
+                        return ()
                     statement = statement.where(
-                        ReviewedExampleRow.example_id > after_example_id
+                        tuple_(ReviewedExampleRow.last_seen_at, ReviewedExampleRow.example_id)
+                        < (cursor_row.last_seen_at, after_example_id)
                     )
                 records = session.execute(
-                    statement.order_by(ReviewedExampleRow.example_id).limit(limit)
+                    statement.order_by(
+                        ReviewedExampleRow.last_seen_at.desc(),
+                        ReviewedExampleRow.example_id.desc(),
+                    ).limit(limit)
                 ).all()
                 return tuple(self._example_from_record(*record) for record in records)
         except (ValueError, SQLAlchemyError) as exc:

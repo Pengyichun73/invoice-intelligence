@@ -108,32 +108,47 @@ class DocumentIngestionService:
                 "An upload with this idempotency key is already in progress"
             )
 
-        stored = await self._file_storage.save_object(
-            StorageWriteRequest(
-                object_id=document_id,
-                tenant_id=normalized_tenant_id,
-                kind=ObjectKind.ORIGINAL,
-                content=document.content,
-                media_type=inspected.mime_type,
-                checksum=checksum,
+        stored = None
+        try:
+            stored = await self._file_storage.save_object(
+                StorageWriteRequest(
+                    object_id=document_id,
+                    tenant_id=normalized_tenant_id,
+                    kind=ObjectKind.ORIGINAL,
+                    content=document.content,
+                    media_type=inspected.mime_type,
+                    checksum=checksum,
+                )
             )
-        )
-        verified = await self._file_storage.head(stored.storage_uri)
-        if verified.checksum != checksum or verified.size_bytes != inspected.size_bytes:
-            raise WorkflowPersistenceError("Stored object failed integrity verification")
-        reference = DocumentReference(
-            document_id=document_id,
-            storage_uri=stored.storage_uri,
-            mime_type=inspected.mime_type,
-            checksum=checksum,
-            size_bytes=inspected.size_bytes,
-            retention_until=(
-                datetime.now(UTC) + timedelta(days=self._original_retention_days)
-                if self._original_retention_days is not None
-                else None
-            ),
-        )
-        await self._document_repository.save_document(reference, normalized_tenant_id)
+            verified = await self._file_storage.head(stored.storage_uri)
+            if verified.checksum != checksum or verified.size_bytes != inspected.size_bytes:
+                raise WorkflowPersistenceError("Stored object failed integrity verification")
+            reference = DocumentReference(
+                document_id=document_id,
+                storage_uri=stored.storage_uri,
+                mime_type=inspected.mime_type,
+                checksum=checksum,
+                size_bytes=inspected.size_bytes,
+                retention_until=(
+                    datetime.now(UTC) + timedelta(days=self._original_retention_days)
+                    if self._original_retention_days is not None
+                    else None
+                ),
+            )
+            await self._document_repository.save_document(reference, normalized_tenant_id)
+        except Exception:
+            await self._idempotency_repository.release_idempotency(
+                operation=operation,
+                key=normalized_key,
+                request_hash=fingerprint,
+                resource_id=document_id,
+            )
+            if stored is not None:
+                try:
+                    await self._file_storage.delete(stored.storage_uri)
+                except Exception:
+                    pass
+            raise
         await self._idempotency_repository.complete_idempotency(
             operation=operation,
             key=normalized_key,

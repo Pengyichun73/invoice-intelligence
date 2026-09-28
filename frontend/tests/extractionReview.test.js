@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   buildReviewSubmission,
+  buildReviewSubmissionEnvelope,
   focusReviewTarget,
   reviewInputMetadata,
   ReviewSubmissionError,
@@ -24,6 +25,19 @@ test('构造明确确认正确的最小审核请求', () => {
     document_type: null,
     fields: [{ field_path: 'voucher_number', action: 'confirm_correct', reason: null }],
     field_bindings: [],
+  })
+})
+
+test('正式审核提交 envelope 只包含版本、租约和 correction', () => {
+  const correction = buildReviewSubmission(base)
+  assert.deepEqual(buildReviewSubmissionEnvelope({
+    expectedRevision: 3,
+    leaseToken: 'a'.repeat(64),
+    correction,
+  }), {
+    expected_revision: 3,
+    lease_token: 'a'.repeat(64),
+    correction,
   })
 })
 

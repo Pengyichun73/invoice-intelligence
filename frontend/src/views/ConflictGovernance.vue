@@ -1,6 +1,6 @@
 <script setup>
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
-import { AlertTriangle, Ban, CheckCircle2, LoaderCircle, RefreshCw, ShieldCheck, X } from 'lucide-vue-next'
+import { AlertTriangle, Ban, CheckCircle2, LoaderCircle, RefreshCw, Search, ShieldCheck, X } from 'lucide-vue-next'
 import PageHeader from '../components/PageHeader.vue'
 import PaginationBar from '../components/PaginationBar.vue'
 import ResourceState from '../components/ResourceState.vue'
@@ -14,6 +14,8 @@ const emit = defineEmits(['navigate'])
 const notices = useNotifications()
 
 const status = ref('open')
+const fieldDraft = ref('')
+const fieldFilter = ref('')
 const operationMessage = ref('')
 const operationError = ref('')
 const dialog = reactive({
@@ -29,7 +31,12 @@ const dialog = reactive({
 const dialogRef = ref(null)
 const reasonRef = ref(null)
 let previousFocus = null
-const pager = usePagedResource((cursor) => governanceApi.conflicts({ status: status.value, limit: 20, cursor }))
+const pager = usePagedResource((cursor) => governanceApi.conflicts({
+  status: status.value === 'all' ? ['open', 'resolved', 'dismissed'] : status.value,
+  field_path: fieldFilter.value,
+  limit: 20,
+  cursor,
+}))
 const isResolve = computed(() => dialog.action === 'resolve')
 const requiresField = computed(() => isResolve.value && Boolean(dialog.item?.candidate_field_paths?.length))
 const canSubmit = computed(() => (
@@ -41,6 +48,8 @@ const canSubmit = computed(() => (
 async function refresh() {
   await pager.load({ reset: true }).catch(() => {})
 }
+function applySearch() { fieldFilter.value = fieldDraft.value.trim(); refresh() }
+function clearSearch() { fieldDraft.value = ''; applySearch() }
 
 async function openAction(action, item) {
   operationMessage.value = ''
@@ -149,7 +158,7 @@ onMounted(refresh)
     <div class="alert warning"><AlertTriangle :size="18" /><span>“解决冲突”必须从后端候选字段中选择；“忽略冲突”仅表示误报或不再适用。所有状态以刷新后的后端结果为准。</span></div>
     <div v-if="operationMessage" class="alert neutral"><CheckCircle2 :size="18" /><span>{{ operationMessage }}</span></div>
     <div v-if="operationError" class="alert error"><AlertTriangle :size="18" /><span>{{ operationError }}</span></div>
-    <section class="toolbar"><label>冲突状态<select v-model="status" @change="refresh"><option value="open">待处理</option><option value="resolved">已解决</option><option value="dismissed">已忽略</option></select></label></section>
+    <section class="toolbar"><label>冲突状态<select v-model="status" @change="refresh"><option value="all">全部状态</option><option value="open">待处理</option><option value="resolved">已解决</option><option value="dismissed">已忽略</option></select></label><form class="admission-run-filter" @submit.prevent="applySearch"><label>字段路径<input v-model="fieldDraft" maxlength="512" placeholder="如 buyer_name" /></label><button class="secondary-btn" type="submit"><Search :size="15" />查询</button><button v-if="fieldFilter" class="icon-btn" type="button" title="清除筛选" @click="clearSearch"><X :size="17" /></button></form></section>
     <section class="surface">
       <ResourceState :loading="pager.state.loading" :error="pager.state.error" :empty="!pager.state.items.length" empty-text="当前没有冲突记录" @retry="refresh">
         <div class="conflict-list">

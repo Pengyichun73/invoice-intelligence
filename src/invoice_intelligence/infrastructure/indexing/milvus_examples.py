@@ -863,11 +863,6 @@ class MilvusExampleIndexStore(ExampleIndexStore):
             label_filter,
             f"index_version == {_expr_string(index_version.value)}",
         ]
-        if options.template_fingerprint is not None:
-            filters.append(
-                "template_fingerprint == "
-                f"{_expr_string(options.template_fingerprint)}"
-            )
         if options.not_before is not None:
             filters.append(
                 f"last_seen_at_epoch >= {int(options.not_before.timestamp())}"

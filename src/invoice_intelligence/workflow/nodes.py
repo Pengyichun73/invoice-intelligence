@@ -190,6 +190,28 @@ class InvoiceWorkflowNodes(Generic[InvoiceT]):
             reviewed_context = reviewed_example_context_from_state(
                 state["reviewed_example_context"]
             )
+            focus_field_paths: tuple[str, ...] = ()
+            if reviewed_context is not None and state["extraction"] is not None:
+                baseline = self._dependencies.extraction_codec.load(
+                    state["extraction"], self._dependencies.output_schema
+                )
+                review_paths = {
+                    item.field_path
+                    for item in self._dependencies.extraction_validator.validate(
+                        baseline
+                    ).field_decisions
+                    if item.route is ValidationRoute.REVIEW_REQUIRED
+                    and item.field_path is not None
+                }
+                case_paths = {
+                    item.field_path
+                    for item in (
+                        *reviewed_context.verified_correct_examples,
+                        *reviewed_context.reviewed_correction_examples,
+                        *reviewed_context.reviewed_negative_examples,
+                    )
+                }
+                focus_field_paths = tuple(sorted(review_paths & case_paths))
             result = await self._dependencies.extraction_service.extract(
                 document=document_from_state(state),
                 output_schema=self._dependencies.output_schema,
@@ -197,6 +219,7 @@ class InvoiceWorkflowNodes(Generic[InvoiceT]):
                 prompt_context=VisionPromptContext(
                     correction_events=correction_context,
                     reviewed_examples=reviewed_context,
+                    focus_field_paths=focus_field_paths,
                 ),
                 trace_id=trace_id_from_state(state),
             )

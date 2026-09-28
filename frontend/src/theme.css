@@ -262,6 +262,14 @@ code { color: #98dcdc; font-family: "Cascadia Mono", "Microsoft YaHei UI", monos
   color: #819499;
   font-size: 10px;
 }
+.admission-run-filter { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; min-width: 0; flex: 1; }
+.admission-run-filter label { flex: 1 1 190px; min-width: min(190px, 100%); }
+.admission-run-filter input { width: 100%; }
+.admission-run-filter .icon-btn { flex: 0 0 40px; }
+@media (max-width: 600px) {
+  .admission-run-filter { flex-wrap: wrap; }
+  .admission-run-filter label { flex-basis: 100%; }
+}
 input, select, textarea {
   min-height: 40px;
   border-color: #31454d;
@@ -1057,3 +1065,9 @@ button.task-metric:hover { border-color: #4d7078; background: #121e24; transform
     grid-template-columns: 1fr;
   }
 }
+/* 隔离验收登录入口 */
+.auth-screen { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: #f4f6f5; color: #172b2a; }
+.auth-panel { width: min(100%, 360px); display: grid; justify-items: start; gap: 16px; padding: 32px; background: #fff; border: 1px solid #d9e2df; border-radius: 6px; }
+.auth-panel h1 { margin: 0; font-size: 24px; }
+.auth-panel p { margin: 0; color: #556763; }
+.auth-command { display: inline-flex; align-items: center; gap: 8px; min-height: 42px; padding: 0 18px; border: 0; border-radius: 4px; background: #17665c; color: #fff; cursor: pointer; }

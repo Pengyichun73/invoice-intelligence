@@ -364,10 +364,6 @@ class MemoryAdmissionWorker(Generic[InvoiceT]):
                 examples=(example,),
             )
             case = result.cases[0]
-            if not case.projection_reconciled:
-                raise _RetryableAdmissionWorkError(
-                    "projection_reconciliation_unavailable"
-                )
             if case.admission.status is MemoryAdmissionStatus.PENDING:
                 if case.advisory_error_code == RemoteInferenceRequestError.__name__:
                     raise _PermanentAdmissionWorkError("model_advisory_request_invalid")

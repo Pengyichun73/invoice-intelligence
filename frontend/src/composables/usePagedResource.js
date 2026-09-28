@@ -2,9 +2,15 @@ import { reactive } from 'vue'
 
 export function usePagedResource(loader) {
   const state = reactive({ items: [], payload: null, loading: false, error: '', cursor: null, nextCursor: null, history: [] })
+  let loadQueue = Promise.resolve()
 
-  async function load({ reset = false } = {}) {
-    if (state.loading) return
+  function load({ reset = false } = {}) {
+    const request = loadQueue.catch(() => {}).then(() => performLoad({ reset }))
+    loadQueue = request
+    return request
+  }
+
+  async function performLoad({ reset }) {
     if (reset) {
       state.cursor = null
       state.history = []

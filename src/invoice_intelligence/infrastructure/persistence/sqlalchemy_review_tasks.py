@@ -26,6 +26,7 @@ from invoice_intelligence.domain.review_tasks import (
     ReviewTaskStatus,
 )
 from invoice_intelligence.infrastructure.persistence.sqlalchemy_models import (
+    ExtractionWorkItemRow,
     ReviewTaskAuditRow,
     ReviewTaskRow,
 )
@@ -376,14 +377,16 @@ class SQLAlchemyReviewTaskRepository:
     ) -> ReviewTask:
         try:
             with self._sessions.begin() as session:
-                exists = session.scalar(
-                    select(ReviewTaskRow.review_id).where(
+                row = session.scalar(
+                    select(ReviewTaskRow).where(
                         ReviewTaskRow.tenant_id == tenant_id,
                         ReviewTaskRow.review_id == review_id,
-                    )
+                    ).with_for_update()
                 )
-                if exists is None:
+                if row is None:
                     raise ResourceNotFoundError("Review task was not found")
+                if self._has_active_resume(session, tenant_id, row.run_id):
+                    raise ResourceConflictError("Review decision is already processing")
                 changed = cast(
                     CursorResult[Any],
                     session.execute(
@@ -434,6 +437,8 @@ class SQLAlchemyReviewTaskRepository:
                 rows = session.scalars(statement).all()
                 tasks: list[ReviewTask] = []
                 for row in rows:
+                    if self._has_active_resume(session, tenant_id, row.run_id):
+                        continue
                     from_status = ReviewTaskStatus(row.status)
                     expired_reviewer_id = row.assigned_reviewer_id
                     row.status = ReviewTaskStatus.EXPIRED.value
@@ -464,6 +469,17 @@ class SQLAlchemyReviewTaskRepository:
                 return tuple(tasks)
         except SQLAlchemyError as exc:
             raise WorkflowPersistenceError("Unable to expire review task leases") from exc
+
+    @staticmethod
+    def _has_active_resume(session: Session, tenant_id: str, run_id: str) -> bool:
+        return session.scalar(
+            select(ExtractionWorkItemRow.task_id).where(
+                ExtractionWorkItemRow.tenant_id == tenant_id,
+                ExtractionWorkItemRow.run_id == run_id,
+                ExtractionWorkItemRow.kind == "resume",
+                ExtractionWorkItemRow.status.in_(("pending", "leased")),
+            ).limit(1)
+        ) is not None
 
     def _mark_submitted_sync(
         self,

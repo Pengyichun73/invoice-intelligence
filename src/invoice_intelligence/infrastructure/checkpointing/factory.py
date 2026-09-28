@@ -25,7 +25,7 @@ async def open_checkpointer(
             yield checkpointer
         return
 
-    dsn = settings.postgres_checkpoint_dsn
+    dsn = settings.resolved_postgres_checkpoint_dsn
     if dsn is None:
         raise ValueError("PostgreSQL checkpoint DSN is not configured")
     async with AsyncPostgresSaver.from_conn_string(dsn.get_secret_value()) as checkpointer:

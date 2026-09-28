@@ -26,6 +26,7 @@ from invoice_intelligence.application.ports.business_persistence import (
 from invoice_intelligence.application.ports.document_repository import (
     DocumentReferenceRepository,
 )
+from invoice_intelligence.application.ports.extraction_queue import ExtractionQueueRepository
 from invoice_intelligence.application.ports.observability import PrivacyTelemetry, TraceStage
 from invoice_intelligence.application.ports.workflow import WorkflowExecutionGateway
 from invoice_intelligence.application.services.idempotency import (
@@ -49,18 +50,21 @@ class ExtractionWorkflowService:
         query_repository: BusinessQueryRepository,
         idempotency_repository: IdempotencyRepository,
         privacy_telemetry: PrivacyTelemetry | None = None,
+        extraction_queue: ExtractionQueueRepository | None = None,
     ) -> None:
         self._workflow = workflow
         self._document_repository = document_repository
         self._query_repository = query_repository
         self._idempotency_repository = idempotency_repository
         self._privacy_telemetry = privacy_telemetry
+        self._extraction_queue = extraction_queue
 
     async def extract_document(
         self,
         document_id: str,
         tenant_id: str,
         trace_id: str | None = None,
+        idempotency_key: str | None = None,
     ) -> ExtractionRunRecord:
         """Start one new extraction run for an existing document."""
 
@@ -78,6 +82,21 @@ class ExtractionWorkflowService:
             run_id=f"run_{uuid4().hex}",
             document_id=document.document_id,
         )
+        if self._extraction_queue is not None:
+            key_hash = (
+                sha256(
+                    f"{normalized_tenant_id}\0extract\0{normalize_idempotency_key(idempotency_key)}".encode()
+                ).hexdigest()
+                if idempotency_key is not None else None
+            )
+            request_hash = sha256(document_id.encode()).hexdigest()
+            return await self._extraction_queue.enqueue_start(
+                identity,
+                normalized_tenant_id,
+                idempotency_hash=key_hash,
+                request_hash=request_hash,
+                trace_id=trace_id,
+            )
         workflow = self._require_workflow()
         await workflow.start(identity, document, normalized_tenant_id, trace_id=trace_id)
         run = await self._query_repository.get_run(identity.run_id, normalized_tenant_id)
@@ -130,11 +149,47 @@ class ExtractionWorkflowService:
         idempotency_key: str | None,
         tenant_id: str,
         trace_id: str | None = None,
+        review_id: str | None = None,
+        expected_review_revision: int | None = None,
+        review_lease_token: str | None = None,
     ) -> ExtractionRunRecord:
         """Resume a pending review through Command(resume=...) behind the gateway."""
 
         normalized_key = normalize_idempotency_key(idempotency_key)
         run = await self.get_run(run_id, tenant_id)
+        if self._extraction_queue is not None:
+            idempotency_hash = sha256(
+                f"{tenant_id}\0review\0{normalized_key}".encode()
+            ).hexdigest()
+            request_hash = self._correction_fingerprint(correction)
+            if await self._extraction_queue.has_resume(
+                run_id,
+                tenant_id,
+                idempotency_hash=idempotency_hash,
+                request_hash=request_hash,
+            ):
+                return run
+            checkpoint_id = await self._require_workflow().get_pending_checkpoint_id(
+                run.identity
+            )
+            if (
+                review_id is None
+                or expected_review_revision is None
+                or review_lease_token is None
+            ):
+                raise ResourceConflictError("Claimed review lease is required")
+            return await self._extraction_queue.enqueue_resume(
+                run.identity,
+                tenant_id,
+                correction,
+                idempotency_hash=idempotency_hash,
+                request_hash=request_hash,
+                trace_id=trace_id,
+                checkpoint_id=checkpoint_id,
+                review_id=review_id,
+                expected_revision=expected_review_revision,
+                lease_token=review_lease_token,
+            )
         operation = f"submit_review:{tenant_id}:{run_id}"
         fingerprint = self._correction_fingerprint(correction)
         existing = await self._idempotency_repository.get_idempotency(
@@ -205,6 +260,23 @@ class ExtractionWorkflowService:
             response_payload={"run_id": run_id},
         )
         return await self.get_run(run_id, tenant_id)
+
+    async def is_review_submission_registered(
+        self,
+        run_id: str,
+        correction: HumanCorrection,
+        idempotency_key: str | None,
+        tenant_id: str,
+    ) -> bool:
+        if self._extraction_queue is None:
+            return False
+        key = normalize_idempotency_key(idempotency_key)
+        return await self._extraction_queue.has_resume(
+            run_id,
+            tenant_id,
+            idempotency_hash=sha256(f"{tenant_id}\0review\0{key}".encode()).hexdigest(),
+            request_hash=self._correction_fingerprint(correction),
+        )
 
     def _require_workflow(self) -> WorkflowExecutionGateway:
         if self._workflow is None:

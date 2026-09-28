@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive } from 'vue'
+import { computed, onActivated, onDeactivated, onMounted, reactive } from 'vue'
 import {
   AlertTriangle,
   ArrowRight,
@@ -31,6 +31,7 @@ const state = reactive({
   ocr: null,
   refreshedAt: null,
 })
+let loadController = null
 
 const today = new Intl.DateTimeFormat('zh-CN', {
   year: 'numeric',
@@ -119,37 +120,53 @@ function todayRange() {
 }
 
 async function load() {
+  loadController?.abort()
+  const controller = new AbortController()
+  loadController = controller
   state.loading = true
   state.error = ''
-  const range = todayRange()
-  const results = await Promise.allSettled([
-    invoiceApi.health(),
-    governanceApi.admissions({ status: 'pending', limit: 100 }),
-    governanceApi.admissions({ status: 'quarantined', limit: 100 }),
-    governanceApi.examples({ is_valid: true, limit: 100 }),
-    governanceApi.conflicts({ status: 'open', limit: 100 }),
-    governanceApi.audits({ ...range, limit: 100 }),
-    governanceApi.ocrMetrics(),
-  ])
-  const [health, pending, quarantined, examples, conflicts, completed, ocr] = results
-  state.online = health.status === 'fulfilled'
-  state.admissions.pending = pending.status === 'fulfilled' ? count(pending.value) : null
-  state.admissions.quarantined = quarantined.status === 'fulfilled' ? count(quarantined.value) : null
-  state.examples = examples.status === 'fulfilled' ? count(examples.value) : null
-  state.conflicts = conflicts.status === 'fulfilled' ? count(conflicts.value) : null
-  state.completed = completed.status === 'fulfilled' ? count(completed.value) : null
-  state.admissions.pendingMore = pending.status === 'fulfilled' && Boolean(pending.value?.next_cursor)
-  state.admissions.quarantinedMore = quarantined.status === 'fulfilled' && Boolean(quarantined.value?.next_cursor)
-  state.examplesMore = examples.status === 'fulfilled' && Boolean(examples.value?.next_cursor)
-  state.conflictsMore = conflicts.status === 'fulfilled' && Boolean(conflicts.value?.next_cursor)
-  state.completedMore = completed.status === 'fulfilled' && Boolean(completed.value?.next_cursor)
-  state.ocr = ocr.status === 'fulfilled' ? ocr.value : null
-  if (!state.online) state.error = '后端暂时不可用，上传和治理操作需等待连接恢复。'
-  else if (results.slice(1).some((item) => item.status === 'rejected')) {
-    state.error = '部分治理数据暂时未读取，页面不会用 0 代替真实状态。'
+  try {
+    const range = todayRange()
+    const requests = [
+      () => invoiceApi.health({ signal: controller.signal }),
+      () => governanceApi.admissions({ status: 'pending', limit: 20 }, { signal: controller.signal }),
+      () => governanceApi.admissions({ status: 'quarantined', limit: 20 }, { signal: controller.signal }),
+      () => governanceApi.examples({ is_valid: true, limit: 20 }, { signal: controller.signal }),
+      () => governanceApi.conflicts({ status: 'open', limit: 20 }, { signal: controller.signal }),
+      () => governanceApi.audits({ ...range, limit: 20 }, { signal: controller.signal }),
+      () => governanceApi.ocrMetrics({ signal: controller.signal }),
+    ]
+    const results = []
+    for (let index = 0; index < requests.length; index += 2) {
+      results.push(...await Promise.allSettled(requests.slice(index, index + 2).map((request) => request())))
+      if (controller.signal.aborted) return
+    }
+    const [health, pending, quarantined, examples, conflicts, completed, ocr] = results
+    state.online = health.status === 'fulfilled'
+    state.admissions.pending = pending.status === 'fulfilled' ? count(pending.value) : null
+    state.admissions.quarantined = quarantined.status === 'fulfilled' ? count(quarantined.value) : null
+    state.examples = examples.status === 'fulfilled' ? count(examples.value) : null
+    state.conflicts = conflicts.status === 'fulfilled' ? count(conflicts.value) : null
+    state.completed = completed.status === 'fulfilled' ? count(completed.value) : null
+    state.admissions.pendingMore = pending.status === 'fulfilled' && Boolean(pending.value?.next_cursor)
+    state.admissions.quarantinedMore = quarantined.status === 'fulfilled' && Boolean(quarantined.value?.next_cursor)
+    state.examplesMore = examples.status === 'fulfilled' && Boolean(examples.value?.next_cursor)
+    state.conflictsMore = conflicts.status === 'fulfilled' && Boolean(conflicts.value?.next_cursor)
+    state.completedMore = completed.status === 'fulfilled' && Boolean(completed.value?.next_cursor)
+    state.ocr = ocr.status === 'fulfilled' ? ocr.value : null
+    if (!state.online) state.error = '后端暂时不可用，上传和治理操作需等待连接恢复。'
+    else if (results.slice(1).some((item) => item.status === 'rejected')) {
+      state.error = '部分治理数据暂时未读取，页面不会用 0 代替真实状态。'
+    }
+    state.refreshedAt = new Date()
+  } catch {
+    state.error = '页面状态读取失败，请稍后重试。'
+  } finally {
+    if (loadController === controller) {
+      loadController = null
+      state.loading = false
+    }
   }
-  state.refreshedAt = new Date()
-  state.loading = false
 }
 
 function go(key) {
@@ -157,6 +174,10 @@ function go(key) {
 }
 
 onMounted(load)
+onActivated(() => {
+  if (!state.refreshedAt && !state.loading) load()
+})
+onDeactivated(() => loadController?.abort())
 </script>
 
 <template>

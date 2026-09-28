@@ -103,13 +103,15 @@ async def extract_document(
     document_id: Annotated[str, Path(min_length=1)],
     service: ExtractionWorkflowServiceDependency,
     context: TrustedTenantContextDependency,
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> ExtractionRunResponse:
-    """Start a new deterministic extraction run through the Service Layer."""
+    """Persist a deterministic extraction request and return its run ID."""
 
     return present_run(
         await service.extract_document(
             document_id,
             context.tenant_id,
             trace_id=context.trace_id,
+            idempotency_key=idempotency_key,
         )
     )

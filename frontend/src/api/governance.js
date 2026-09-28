@@ -1,4 +1,4 @@
-import { get, write } from './client'
+import { DEFAULT_REQUEST_TIMEOUT_MS, get, write } from './client.js'
 
 const memory = '/api/v1/memory'
 const semantics = '/api/v1/field-semantics'
@@ -8,8 +8,14 @@ const promotion = '/api/v1/model-promotion'
 const transactions = '/api/v1/transactions'
 
 export const governanceApi = {
-  admissions: (params) => get(`${memory}/admissions`, params),
-  admission: (id) => get(`${memory}/admissions/${encodeURIComponent(id)}`),
+  admissions: (params, options = {}) => get(`${memory}/admissions`, params, {
+    timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
+    ...options,
+  }),
+  admission: (id, options = {}) => get(`${memory}/admissions/${encodeURIComponent(id)}`, undefined, {
+    timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
+    ...options,
+  }),
   decideAdmission: (id, action, reason, expectedRevision) => write(
     `${memory}/admissions/${encodeURIComponent(id)}/${action}`,
     { body: { reason, expected_revision: expectedRevision } },
@@ -18,15 +24,28 @@ export const governanceApi = {
     `${memory}/admissions/batch/${action}`,
     { body: { reason, items } },
   ),
-  examples: (params) => get(`${memory}/examples`, params),
-  example: (id) => get(`${memory}/examples/${encodeURIComponent(id)}`),
-  exampleProjections: (id, params) => get(
+  examples: (params, options = {}) => get(`${memory}/examples`, params, {
+    timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
+    ...options,
+  }),
+  example: (id, options = {}) => get(`${memory}/examples/${encodeURIComponent(id)}`, undefined, {
+    timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
+    ...options,
+  }),
+  exampleProjections: (id, params, options = {}) => get(
     `${memory}/examples/${encodeURIComponent(id)}/projections`,
     params,
+    { timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS, ...options },
   ),
   disableExample: (id, reason) => write(`${memory}/examples/${encodeURIComponent(id)}/disable`, { body: { reason } }),
-  fieldSemantics: (params) => get(semantics, params),
-  conflicts: (params) => get(`${semantics}/conflicts`, params),
+  fieldSemantics: (params, options = {}) => get(semantics, params, {
+    timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
+    ...options,
+  }),
+  conflicts: (params, options = {}) => get(`${semantics}/conflicts`, params, {
+    timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
+    ...options,
+  }),
   decideConflict: (id, action, body) => write(
     `${semantics}/conflicts/${encodeURIComponent(id)}/${action}`,
     { body },
@@ -36,7 +55,11 @@ export const governanceApi = {
     { body: { reason, expected_revision: expectedRevision } },
   ),
   rebuildIndex: (body) => write(`${memory}/indexes/rebuild`, { body }),
-  index: (version) => get(`${memory}/indexes/${encodeURIComponent(version)}`),
+  index: (version) => get(
+    `${memory}/indexes/${encodeURIComponent(version)}`,
+    undefined,
+    { timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS },
+  ),
   projectIndex: (version, limit = null) => write(
     `${memory}/indexes/${encodeURIComponent(version)}/project`,
     { body: { limit } },
@@ -48,6 +71,8 @@ export const governanceApi = {
   rebuildFieldSemanticIndex: (body) => write(`${semantics}/indexes/rebuild`, { body }),
   fieldSemanticIndex: (version) => get(
     `${semantics}/indexes/${encodeURIComponent(version)}`,
+    undefined,
+    { timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS },
   ),
   projectFieldSemanticIndex: (version, limit = null) => write(
     `${semantics}/indexes/${encodeURIComponent(version)}/project`,
@@ -57,12 +82,30 @@ export const governanceApi = {
     `${semantics}/indexes/${encodeURIComponent(version)}/activate`,
     { body: {} },
   ),
-  ocrMetrics: () => get(`${memory}/ocr-metrics`),
-  evaluation: (id) => get(`${memory}/evaluations/${encodeURIComponent(id)}`),
-  audits: (params) => get(`${memory}/audits`, params),
-  evaluationJobs: (params) => get(`${evaluations}/jobs`, params),
-  evaluationJob: (id) => get(`${evaluations}/jobs/${encodeURIComponent(id)}`),
-  trainingJob: (id) => get(`${training}/${encodeURIComponent(id)}`),
+  ocrMetrics: (options = {}) => get(`${memory}/ocr-metrics`, undefined, {
+    timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
+    ...options,
+  }),
+  evaluation: (id, options = {}) => get(`${memory}/evaluations/${encodeURIComponent(id)}`, undefined, {
+    timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
+    ...options,
+  }),
+  audits: (params, options = {}) => get(`${memory}/audits`, params, {
+    timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
+    ...options,
+  }),
+  evaluationJobs: (params, options = {}) => get(`${evaluations}/jobs`, params, {
+    timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
+    ...options,
+  }),
+  evaluationJob: (id, options = {}) => get(`${evaluations}/jobs/${encodeURIComponent(id)}`, undefined, {
+    timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
+    ...options,
+  }),
+  trainingJob: (id, options = {}) => get(`${training}/${encodeURIComponent(id)}`, undefined, {
+    timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
+    ...options,
+  }),
   cancelTrainingJob: (id, reason) => write(
     `${training}/${encodeURIComponent(id)}/cancel`,
     { body: { reason } },

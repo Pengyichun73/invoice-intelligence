@@ -1,8 +1,10 @@
 import asyncio
 from dataclasses import replace
 from hashlib import sha256
+from io import BytesIO
 
 import pytest
+from PIL import Image
 
 from invoice_intelligence.application.services.vision_extraction import (
     VisionExtractionService,
@@ -14,11 +16,102 @@ from invoice_intelligence.domain.document import (
     VisionImage,
 )
 from invoice_intelligence.domain.extraction import (
+    EvidenceSource,
     ExtractionResult,
+    FieldEvidence,
+    OCRComparisonOutcome,
+    OCRFieldObservation,
     OCRProviderStatus,
+    OCRVisionComparison,
     RawOCRObservation,
     RawOCRResult,
+    Readability,
+    VisionPromptContext,
 )
+from invoice_intelligence.domain.field_semantics import FieldBindingStatus
+from invoice_intelligence.domain.invoice import InvoiceExtraction
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mode,seen,expected",
+    [
+        ("shadow", "CURRENT-123", None),
+        ("apply", "CURRENT-123", "CURRENT-123"),
+        ("apply", "DIFFERENT-456", None),
+    ],
+)
+async def test_targeted_reread_uses_current_region_only(
+    mode: str, seen: str, expected: str | None
+) -> None:
+    with BytesIO() as output:
+        Image.new("RGB", (200, 150), "white").save(output, format="PNG")
+        page = VisionImage(output.getvalue(), "image/png", 1, 200, 150)
+    path = "invoice_number"
+    initial_evidence = FieldEvidence(
+        path, EvidenceSource.VISUAL, 1, (), Readability.MISSING, ()
+    )
+    reread_evidence = FieldEvidence(
+        path, EvidenceSource.VISUAL, 1, (seen,), Readability.READABLE, ()
+    )
+    comparison = OCRVisionComparison(
+        path, (), ("CURRENT-123",), (), (),
+        OCRComparisonOutcome.OCR_ONLY, (), True,
+    )
+    ocr = OCRFieldObservation(
+        field_path=path, page_number=1, candidate_values=("CURRENT-123",),
+        bounding_box=(20.0, 20.0, 80.0, 45.0),
+        binding_status=FieldBindingStatus.ACCEPTED,
+    )
+    empty = InvoiceExtraction.model_validate(
+        {name: None for name in InvoiceExtraction.model_fields}
+    )
+    initial = ExtractionResult(
+        empty, (initial_evidence,), (),
+        ocr_observations=(ocr,), ocr_comparisons=(comparison,),
+    )
+
+    class Provider:
+        async def extract(self, *, images, **kwargs):
+            assert images[0].width < page.width
+            return ExtractionResult(
+                empty.model_copy(update={path: seen}),
+                (reread_evidence,), (),
+            )
+
+    class Comparison:
+        async def compare(self, *, result, **kwargs):
+            return replace(
+                result,
+                ocr_comparisons=(OCRVisionComparison(
+                    path, ("CURRENT-123",), ("CURRENT-123",), (), (),
+                    OCRComparisonOutcome.CORROBORATED, (), False,
+                ),),
+            )
+
+    service = object.__new__(VisionExtractionService)
+    service._provider = Provider()
+    service._targeted_reread_mode = mode
+    actual = await service._targeted_reread(
+        initial, (page,), InvoiceExtraction,
+        VisionPromptContext(focus_field_paths=(path,)),
+        "tenant-a", "document-a", "invoice", (), Comparison(),
+    )
+    assert actual.invoice.invoice_number == expected
+    if expected is None:
+        assert actual is initial
+    else:
+        assert "targeted_region_reread" in actual.field_evidence[0].validation_signals
+
+
+def test_targeted_crop_rejects_unbounded_ocr_regions() -> None:
+    with BytesIO() as output:
+        Image.new("RGB", (200, 150), "white").save(output, format="PNG")
+        page = VisionImage(output.getvalue(), "image/png", 1, 200, 150)
+    with pytest.raises(ValueError, match="outside"):
+        VisionExtractionService._crop_ocr_region(page, (180.0, 10.0, 220.0, 30.0))
+    with pytest.raises(ValueError, match="localized"):
+        VisionExtractionService._crop_ocr_region(page, (1.0, 1.0, 199.0, 149.0))
 
 
 class _Facts:
@@ -216,3 +309,35 @@ async def test_extract_shares_normalized_images_and_ocr_cannot_overwrite_vision(
         OCRProviderStatus.AVAILABLE,
         OCRProviderStatus.UNAVAILABLE,
     )
+
+
+@pytest.mark.asyncio
+async def test_evaluation_extract_disables_ocr_and_artifact_writes() -> None:
+    content = b"isolated-source"
+    images = (VisionImage(b"page", "image/png", 1, 800, 600),)
+    raw_provider = _CapturingRawProvider("raw")
+
+    class Artifacts:
+        async def store_rendered(self, *args):
+            raise AssertionError("Evaluation must not persist rendered pages")
+
+    service = VisionExtractionService(
+        file_storage=_Storage(content),
+        artifact_service=Artifacts(),
+        document_processor=_Processor(images),
+        provider=_VisionProvider(),
+        image_quality_analyzer=_Quality(),
+        limits=DocumentProcessingLimits(1024, 2, 300, 2048, 4_000_000),
+        field_semantic_catalog=_Catalog(),
+        correction_scope_resolver=_ScopeResolver(),
+        schema_version="3.0.0",
+        raw_ocr_providers=(raw_provider,),
+        ocr_comparison_service=_Comparison(),
+    )
+    result = await service.extract(
+        DocumentReference("doc", "isolated://doc", "image/png", sha256(content).hexdigest()),
+        object, "isolated-tenant",
+        include_ocr=False, persist_artifacts=False, targeted_reread_mode="off",
+    )
+    assert result.raw_ocr_observations == ()
+    assert raw_provider.images is None

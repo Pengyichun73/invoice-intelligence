@@ -7,10 +7,13 @@ from pathlib import Path
 from typing import Any
 
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9_.:/-]{1,128}$")
+_ROUTE = re.compile(r"^/[A-Za-z0-9_./{}:-]{1,255}$")
 _TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[.\d]*(?:Z|[+-]\d{2}:\d{2})$")
 _ROTATED_LOG = re.compile(r"^[a-z][a-z0-9-]{0,63}-\d+\.jsonl(?:\.[1-9]\d?)?$")
 _FIELDS = (
     "timestamp", "stage", "operation", "outcome", "error_code", "error_type",
+    "cause_type", "db_driver_error_type", "db_connection_invalidated", "db_sqlstate",
+    "http_method", "http_route", "validation_error_type", "validation_error_count",
     "resource_type", "resource_id", "run_id", "document_id", "worker_id",
     "status_code", "attempt_count", "duration_ms", "model_version",
     "provider_version", "config_version", "index_version",
@@ -40,20 +43,26 @@ def safe_identifier(value: object, *, limit: int = 128) -> str | None:
     return value
 
 
-def _safe_event(raw: dict[str, Any]) -> dict[str, str | int | float]:
-    event: dict[str, str | int | float] = {}
+def _safe_event(raw: dict[str, Any]) -> dict[str, str | int | float | bool]:
+    event: dict[str, str | int | float | bool] = {}
     for name in _FIELDS:
         value = raw.get(name)
         if name == "timestamp":
             if isinstance(value, str) and _TIMESTAMP.fullmatch(value):
                 event[name] = value
-        elif name in {"status_code", "attempt_count"}:
+        elif name in {"status_code", "attempt_count", "validation_error_count"}:
             if type(value) is int and 0 <= value <= 100_000:
                 event[name] = value
         elif name == "duration_ms":
             if isinstance(value, (int, float)) and not isinstance(value, bool) and (
                 0 <= value <= 86_400_000
             ):
+                event[name] = value
+        elif name == "db_connection_invalidated":
+            if isinstance(value, bool):
+                event[name] = value
+        elif name == "http_route":
+            if isinstance(value, str) and _ROUTE.fullmatch(value):
                 event[name] = value
         else:
             safe = safe_identifier(value)
@@ -62,7 +71,7 @@ def _safe_event(raw: dict[str, Any]) -> dict[str, str | int | float]:
     return event
 
 
-def _failed(event: dict[str, str | int | float]) -> bool:
+def _failed(event: dict[str, str | int | float | bool]) -> bool:
     status_code = event.get("status_code")
     return (
         event.get("outcome") in {"failed", "failure", "error"}
@@ -100,7 +109,7 @@ def _log_files(path: Path, max_bytes: int) -> list[Path]:
     return sorted(files)
 
 
-def _event_time(event: dict[str, str | int | float]) -> float:
+def _event_time(event: dict[str, str | int | float | bool]) -> float:
     value = event.get("timestamp")
     if not isinstance(value, str):
         return float("inf")
@@ -115,9 +124,9 @@ def collect_trace_events(
     since: datetime | None = None, until: datetime | None = None,
     error_code: str | None = None,
     max_bytes: int = 512_000_000,
-) -> tuple[list[dict[str, str | int | float]], int, bool]:
+) -> tuple[list[dict[str, str | int | float | bool]], int, bool]:
     """Read one file or a bounded logs directory; return metadata only."""
-    matches: list[dict[str, str | int | float]] = []
+    matches: list[dict[str, str | int | float | bool]] = []
     for file in _log_files(path, max_bytes):
         with file.open("r", encoding="utf-8", errors="replace") as stream:
             for line in stream:
@@ -157,7 +166,7 @@ def collect_trace_events(
 
 def build_packet(
     *, trace_id: str, tenant_id: str,
-    events: list[dict[str, str | int | float]], matched: int,
+    events: list[dict[str, str | int | float | bool]], matched: int,
     events_omitted: bool, facts: dict[str, object] | None = None,
     max_chars: int = 6000, error_code: str | None = None,
 ) -> dict[str, object]:
@@ -177,6 +186,9 @@ def build_packet(
     failure = events[failure_index] if failure_index is not None else None
     stage = failure.get("stage") if failure else None
     hint = _SOURCE_HINTS.get(str(stage)) if stage else None
+    route = failure.get("http_route") if failure else None
+    if hint is None and isinstance(route, str) and route.startswith("/api/v1/memory/"):
+        hint = "src/invoice_intelligence/api/routes/memory.py"
     packet: dict[str, object] = {
         "schema_version": "diagnostic-packet-v1",
         "trace_id": trace_id,

@@ -1,6 +1,6 @@
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
-import { RefreshCw } from 'lucide-vue-next'
+import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { RefreshCw, Search, X } from 'lucide-vue-next'
 import ActionDialog from '../components/ActionDialog.vue'
 import PageHeader from '../components/PageHeader.vue'
 import PaginationBar from '../components/PaginationBar.vue'
@@ -13,10 +13,35 @@ import { useNotifications } from '../composables/useNotifications'
 const notices = useNotifications()
 
 const filter = ref('pending')
+const pathDraft = ref('')
+const pathFilter = ref('')
 const operationMessage = ref('')
 const state = reactive({ payload: null, loading: false, error: '', cursor: null, history: [] })
 const action = reactive({ open: false, type: '', item: null, busy: false })
-async function load(reset = false) { if (reset) { state.cursor = null; state.history = [] } state.loading = true; state.error = ''; try { state.payload = await governanceApi.fieldSemantics({ alias_status: filter.value, limit: 50, cursor: state.cursor }) } catch (error) { state.error = error.message } finally { state.loading = false } }
+let loadController = null
+async function load(reset = false) {
+  loadController?.abort()
+  if (reset) { state.cursor = null; state.history = [] }
+  const controller = new AbortController()
+  loadController = controller
+  state.loading = true
+  state.error = ''
+  try {
+    state.payload = await governanceApi.fieldSemantics(
+      { alias_status: filter.value === 'all' ? undefined : filter.value, canonical_field_path: pathFilter.value, limit: 50, cursor: state.cursor },
+      { signal: controller.signal },
+    )
+  } catch (error) {
+    if (!controller.signal.aborted) state.error = error.message
+  } finally {
+    if (loadController === controller) {
+      loadController = null
+      state.loading = false
+    }
+  }
+}
+function applySearch() { pathFilter.value = pathDraft.value.trim(); load(true) }
+function clearSearch() { pathDraft.value = ''; applySearch() }
 async function next() { if (!state.payload?.next_cursor) return; state.history.push(state.cursor); state.cursor = state.payload.next_cursor; await load() }
 async function previous() { if (!state.history.length) return; state.cursor = state.history.pop() ?? null; await load() }
 function openAction(type, item) { Object.assign(action, { open: true, type, item }) }
@@ -63,13 +88,14 @@ async function decide(reason) {
   }
 }
 onMounted(() => load(true))
+onBeforeUnmount(() => loadController?.abort())
 </script>
 
 <template>
   <div>
     <PageHeader eyebrow="字段语义" title="字段语义治理" description="基础定义来自只读发票数据结构；租户别名版本化并经审批。"><button class="secondary-btn" @click="load(true)"><RefreshCw :size="16" />刷新</button></PageHeader>
     <div v-if="operationMessage" class="alert neutral"><span>{{ operationMessage }}</span></div>
-    <section class="toolbar"><label>候选状态<select v-model="filter" @change="load(true)"><option v-for="item in ['pending','approved','rejected','suspended','invalidated']" :key="item" :value="item">{{ displayLabel(item, 'alias_status') }}</option></select></label><span class="context-note">别名不能替代标准字段路径</span></section>
+    <section class="toolbar"><label>候选状态<select v-model="filter" @change="load(true)"><option value="all">全部状态</option><option v-for="item in ['pending','approved','rejected','suspended','invalidated']" :key="item" :value="item">{{ displayLabel(item, 'alias_status') }}</option></select></label><form class="admission-run-filter" @submit.prevent="applySearch"><label>标准字段路径<input v-model="pathDraft" maxlength="512" placeholder="如 buyer_name" /></label><button class="secondary-btn" type="submit"><Search :size="15" />查询</button><button v-if="pathFilter" class="icon-btn" type="button" title="清除筛选" @click="clearSearch"><X :size="17" /></button></form></section>
     <ResourceState :loading="state.loading" :error="state.error" :empty="!state.payload" @retry="load">
       <div v-if="state.payload" class="semantics-grid">
         <section class="surface"><header class="section-head"><div><span>标准字段定义</span><h2>当前字段目录</h2></div><b>{{ state.payload.definitions.length }}</b></header><div class="definition-list"><article v-for="item in state.payload.definitions" :key="`${item.catalog_version}-${item.canonical_field_path}`"><header><code>{{ item.canonical_field_path }}</code><StatusBadge :value="item.is_valid ? 'completed' : 'invalidated'" /></header><h3>{{ item.display_name }}</h3><p>{{ item.description }}</p><div class="tag-row"><span>类型 {{ displayLabel(item.value_type, 'value_type') }}</span><span>目录版本 {{ item.catalog_version }}</span><span>数据结构版本 {{ item.schema_version }}</span></div><dl><div><dt>已审批别名</dt><dd>{{ item.aliases.map((alias) => alias.alias_text).join('、') || '无' }}</dd></div><div><dt>负向别名</dt><dd>{{ item.negative_aliases.map((alias) => alias.alias_text).join('、') || '无' }}</dd></div><div><dt>上下文锚点</dt><dd>{{ item.context_anchors.map((anchor) => anchor.text).join('、') || '无' }}</dd></div></dl></article></div></section>

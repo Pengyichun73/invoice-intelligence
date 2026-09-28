@@ -1,0 +1,50 @@
+{
+  "realm": "invoice-acceptance",
+  "enabled": true,
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": false,
+  "roles": {
+    "realm": [
+      { "name": "invoice-extractor" },
+      { "name": "invoice-reviewer" },
+      { "name": "memory-governor" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "invoice-intelligence-console",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "redirectUris": ["http://127.0.0.1:15173/*"],
+      "webOrigins": ["http://127.0.0.1:15173"],
+      "attributes": { "pkce.code.challenge.method": "S256" },
+      "protocolMappers": [
+        {
+          "name": "api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": { "included.custom.audience": "invoice-intelligence-api", "access.token.claim": "true" }
+        },
+        {
+          "name": "tenant-id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": { "user.attribute": "tenant_id", "claim.name": "tenant_id", "jsonType.label": "String", "access.token.claim": "true" }
+        },
+        {
+          "name": "reviewer-id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": { "user.attribute": "reviewer_id", "claim.name": "reviewer_id", "jsonType.label": "String", "access.token.claim": "true" }
+        }
+      ]
+    }
+  ]
+}

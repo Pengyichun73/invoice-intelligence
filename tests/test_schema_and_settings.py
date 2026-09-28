@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from invoice_intelligence.config.settings import Settings
+from invoice_intelligence.config.settings import Environment, Settings
 from invoice_intelligence.domain.invoice import InvoiceExtraction
 
 EXPECTED_FIELDS = (
@@ -25,6 +25,15 @@ EXPECTED_FIELDS = (
     "batch_code",
     "voucher_number",
 )
+
+
+def test_production_rejects_unverified_targeted_reread_apply() -> None:
+    settings = Settings.model_construct(
+        environment=Environment.PRODUCTION,
+        memory_targeted_reread_mode="apply",
+    )
+    with pytest.raises(ValueError, match="verified benefit gate"):
+        settings.validate_memory_reread_rollout()
 
 
 def test_invoice_schema_is_fixed_and_forbids_ocr_metadata() -> None:

@@ -1,6 +1,7 @@
 """Stable FastAPI exception-to-status mapping."""
 
 import logging
+import time
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -23,6 +24,8 @@ from invoice_intelligence.application.errors import (
     WorkflowPersistenceError,
 )
 from invoice_intelligence.code_harness.domain.errors import HarnessError, HarnessErrorCode
+from invoice_intelligence.config.logging import safe_failure_fields
+from invoice_intelligence.domain.governance import TrustedTenantContext
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -74,17 +77,24 @@ async def _unprocessable(_: Request, error: Exception) -> JSONResponse:
     return _response(422, "unprocessable_entity", str(error))
 
 
-async def _request_validation(_: Request, error: Exception) -> JSONResponse:
+async def _request_validation(request: Request, error: Exception) -> JSONResponse:
     diagnostics: list[str] = []
     if isinstance(error, RequestValidationError):
+        issues = error.errors()
         diagnostics = [
             f"{'.'.join(str(part) for part in item['loc'])}:{item['type']}"
-            for item in error.errors()[:10]
+            for item in issues[:10]
         ]
-    if diagnostics:
+    else:
+        issues = []
+    if issues:
         _LOGGER.warning(
             "request_validation_error",
-            extra={"schema_diagnostics": diagnostics},
+            extra={
+                **_failure_log_fields(request, error, 422),
+                "validation_error_type": str(issues[0]["type"])[:64],
+                "validation_error_count": len(issues),
+            },
         )
     message = "Request validation failed"
     if diagnostics:
@@ -96,19 +106,47 @@ async def _rate_limited(_: Request, error: Exception) -> JSONResponse:
     return _response(429, "rate_limit_exceeded", str(error))
 
 
-async def _unavailable(_: Request, error: Exception) -> JSONResponse:
+async def _unavailable(request: Request, error: Exception) -> JSONResponse:
+    _LOGGER.warning("API dependency unavailable", extra=_failure_log_fields(request, error, 503))
     return _response(503, "service_unavailable", str(error))
 
 
 async def _internal(request: Request, error: Exception) -> JSONResponse:
+    status_code = 503 if isinstance(error, WorkflowPersistenceError) else 500
     _LOGGER.error(
         "Unhandled API failure",
-        extra={
-            "path": request.url.path,
-            "error_type": type(error).__name__,
-        },
+        extra=_failure_log_fields(request, error, status_code),
     )
+    if isinstance(error, WorkflowPersistenceError):
+        return _response(
+            503,
+            "service_unavailable",
+            "数据库服务暂时不可用，请稍后重试",
+        )
     return _response(500, "internal_server_error", "Internal server error")
+
+
+def _failure_log_fields(
+    request: Request, error: Exception, status_code: int
+) -> dict[str, object]:
+    context = getattr(request.state, "trusted_tenant_context", None)
+    route = getattr(request.scope.get("route"), "path", None)
+    started_at = getattr(request.state, "request_started_at", None)
+    duration_ms = (
+        max(0.0, (time.perf_counter() - started_at) * 1000)
+        if isinstance(started_at, float)
+        else None
+    )
+    return {
+        "error_type": type(error).__name__,
+        "http_method": request.method,
+        "http_route": route if isinstance(route, str) else None,
+        "status_code": status_code,
+        "duration_ms": duration_ms,
+        "trace_id": getattr(request.state, "server_trace_id", None),
+        "tenant_id": context.tenant_id if isinstance(context, TrustedTenantContext) else None,
+        **safe_failure_fields(error),
+    }
 
 
 async def _harness_error(_: Request, error: Exception) -> JSONResponse:

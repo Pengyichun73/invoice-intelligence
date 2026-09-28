@@ -7,7 +7,7 @@ from hashlib import sha256
 from typing import Any, cast
 from uuid import uuid4
 
-from sqlalchemy import Engine, delete, exists, func, select, update
+from sqlalchemy import Engine, delete, exists, func, literal, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import CursorResult
@@ -40,6 +40,7 @@ from invoice_intelligence.infrastructure.persistence.sqlalchemy_governance impor
     require_governance_audit,
 )
 from invoice_intelligence.infrastructure.persistence.sqlalchemy_models import (
+    ExampleFeedbackRow,
     ExampleIndexProjectionRow,
     FieldAliasCandidateDecisionRow,
     FieldAliasCandidateRow,
@@ -81,8 +82,7 @@ class _SQLAlchemyAdmissionStore:
             statement = sqlite_insert(model).values(**values).on_conflict_do_nothing()
         else:
             raise WorkflowPersistenceError("Unsupported business database dialect")
-        result = cast(CursorResult[Any], session.execute(statement))
-        return result.rowcount == 1
+        return session.scalar(statement.returning(literal(1))) is not None
 
     @staticmethod
     def _require_text(name: str, value: str) -> None:
@@ -305,6 +305,8 @@ class SQLAlchemyMemoryAdmissionRepository(_SQLAlchemyAdmissionStore):
         *,
         limit: int,
         after_example_id: str | None = None,
+        run_id: str | None = None,
+        field_path: str | None = None,
     ) -> tuple[MemoryAdmissionRecord, ...]:
         return await asyncio.to_thread(
             self._list_by_status_sync,
@@ -312,6 +314,8 @@ class SQLAlchemyMemoryAdmissionRepository(_SQLAlchemyAdmissionStore):
             tuple(statuses),
             limit,
             after_example_id,
+            run_id,
+            field_path,
         )
 
     async def list_for_schema(
@@ -889,6 +893,8 @@ class SQLAlchemyMemoryAdmissionRepository(_SQLAlchemyAdmissionStore):
         statuses: tuple[MemoryAdmissionStatus, ...],
         limit: int,
         after_example_id: str | None,
+        run_id: str | None,
+        field_path: str | None,
     ) -> tuple[MemoryAdmissionRecord, ...]:
         if not statuses:
             raise ValueError("At least one admission status is required")
@@ -897,6 +903,8 @@ class SQLAlchemyMemoryAdmissionRepository(_SQLAlchemyAdmissionStore):
             limit,
             after_example_id,
             statuses=tuple(status.value for status in statuses),
+            run_id=run_id,
+            field_path=field_path,
         )
 
     def _list_for_schema_sync(
@@ -922,6 +930,8 @@ class SQLAlchemyMemoryAdmissionRepository(_SQLAlchemyAdmissionStore):
         *,
         statuses: tuple[str, ...] | None = None,
         schema_version: str | None = None,
+        run_id: str | None = None,
+        field_path: str | None = None,
     ) -> tuple[MemoryAdmissionRecord, ...]:
         self._require_text("tenant_id", tenant_id)
         if limit <= 0:
@@ -937,13 +947,47 @@ class SQLAlchemyMemoryAdmissionRepository(_SQLAlchemyAdmissionStore):
                     statement = statement.where(
                         MemoryAdmissionRecordRow.schema_version == schema_version
                     )
+                if run_id is not None:
+                    self._require_text("run_id", run_id)
+                if field_path is not None:
+                    self._require_text("field_path", field_path)
+                if run_id is not None or field_path is not None:
+                    statement = statement.join(
+                        ReviewedExampleRow,
+                        ReviewedExampleRow.example_id == MemoryAdmissionRecordRow.example_id,
+                    ).where(
+                        ReviewedExampleRow.tenant_id == tenant_id,
+                    )
+                    if run_id is not None:
+                        statement = statement.where(
+                            exists().where(
+                                ExampleFeedbackRow.tenant_id == tenant_id,
+                                ExampleFeedbackRow.semantic_fingerprint
+                                == ReviewedExampleRow.semantic_fingerprint,
+                                ExampleFeedbackRow.run_id == run_id,
+                            )
+                        )
+                    if field_path is not None:
+                        statement = statement.where(ReviewedExampleRow.field_path == field_path)
                 if after_example_id is not None:
                     self._require_text("after_example_id", after_example_id)
+                    cursor_row = session.scalar(
+                        select(MemoryAdmissionRecordRow).where(
+                            MemoryAdmissionRecordRow.tenant_id == tenant_id,
+                            MemoryAdmissionRecordRow.example_id == after_example_id,
+                        )
+                    )
+                    if cursor_row is None:
+                        return ()
                     statement = statement.where(
-                        MemoryAdmissionRecordRow.example_id > after_example_id
+                        tuple_(MemoryAdmissionRecordRow.updated_at, MemoryAdmissionRecordRow.example_id)
+                        < (cursor_row.updated_at, after_example_id)
                     )
                 rows = session.scalars(
-                    statement.order_by(MemoryAdmissionRecordRow.example_id).limit(limit)
+                    statement.order_by(
+                        MemoryAdmissionRecordRow.updated_at.desc(),
+                        MemoryAdmissionRecordRow.example_id.desc(),
+                    ).limit(limit)
                 ).all()
                 return tuple(self._record_from_row(row) for row in rows)
         except (ValueError, SQLAlchemyError) as exc:
@@ -1278,6 +1322,7 @@ class SQLAlchemyMemoryConflictRepository(_SQLAlchemyAdmissionStore):
         alias_conflicts_only: bool,
         limit: int,
         after_conflict_id: str | None = None,
+        field_path: str | None = None,
     ) -> tuple[MemoryConflictRecord, ...]:
         return await asyncio.to_thread(
             self._list_for_governance_sync,
@@ -1286,6 +1331,7 @@ class SQLAlchemyMemoryConflictRepository(_SQLAlchemyAdmissionStore):
             alias_conflicts_only,
             limit,
             after_conflict_id,
+            field_path,
         )
 
     async def resolve(
@@ -1521,6 +1567,7 @@ class SQLAlchemyMemoryConflictRepository(_SQLAlchemyAdmissionStore):
         alias_conflicts_only: bool,
         limit: int,
         after_conflict_id: str | None,
+        field_path: str | None,
     ) -> tuple[MemoryConflictRecord, ...]:
         self._require_text("tenant_id", tenant_id)
         if not statuses:
@@ -1529,6 +1576,8 @@ class SQLAlchemyMemoryConflictRepository(_SQLAlchemyAdmissionStore):
             raise ValueError("limit must be greater than zero")
         if after_conflict_id is not None:
             self._require_text("after_conflict_id", after_conflict_id)
+        if field_path is not None:
+            self._require_text("field_path", field_path)
         try:
             with self._sessions() as session:
                 statement = select(MemoryConflictRow).where(
@@ -1545,12 +1594,29 @@ class SQLAlchemyMemoryConflictRepository(_SQLAlchemyAdmissionStore):
                             MemoryConflictFieldAliasCandidateRow.tenant_id == tenant_id,
                         )
                     )
+                if field_path is not None:
+                    statement = statement.where(MemoryConflictRow.field_path == field_path)
                 if after_conflict_id is not None:
+                    cursor_row = session.scalar(
+                        select(MemoryConflictRow).where(
+                            MemoryConflictRow.tenant_id == tenant_id,
+                            MemoryConflictRow.conflict_id == after_conflict_id,
+                        )
+                    )
+                    if cursor_row is None:
+                        return ()
+                    cursor_time = cursor_row.resolved_at or cursor_row.detected_at
                     statement = statement.where(
-                        MemoryConflictRow.conflict_id > after_conflict_id
+                        tuple_(
+                            func.coalesce(MemoryConflictRow.resolved_at, MemoryConflictRow.detected_at),
+                            MemoryConflictRow.conflict_id,
+                        ) < (cursor_time, after_conflict_id)
                     )
                 rows = session.scalars(
-                    statement.order_by(MemoryConflictRow.conflict_id).limit(limit)
+                    statement.order_by(
+                        func.coalesce(MemoryConflictRow.resolved_at, MemoryConflictRow.detected_at).desc(),
+                        MemoryConflictRow.conflict_id.desc(),
+                    ).limit(limit)
                 ).all()
                 return tuple(self._conflict_from_row(session, row) for row in rows)
         except (ValueError, SQLAlchemyError) as exc:

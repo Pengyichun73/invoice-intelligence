@@ -163,6 +163,38 @@ class ExtractionRunRow(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class ExtractionWorkItemRow(Base):
+    __tablename__ = "extraction_work_items"
+    __table_args__ = (
+        Index("ix_extraction_work_run_kind_status", "run_id", "kind", "status"),
+        UniqueConstraint(
+            "tenant_id", "kind", "idempotency_hash",
+            name="uq_extraction_work_idempotency",
+        ),
+    )
+
+    task_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("extraction_runs.run_id", ondelete="CASCADE"), nullable=False
+    )
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    correction_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    idempotency_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    trace_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    checkpoint_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    worker_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    claim_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ExtractionResultRow(Base):
     __tablename__ = "extraction_results"
 

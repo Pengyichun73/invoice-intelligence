@@ -37,7 +37,7 @@ mock Adapter。外部失败追加 PostgreSQL attempt/audit，不回滚识别或�
 ## 2. 不可变架构原则
 
 1. Python 3.12 和 `src` layout。
-2. `InvoiceExtraction` 是只读业务 Entity Schema，字段、类型和两个发票分支不能被技术元数据污染。
+2. `InvoiceExtraction` 是只读的固定 19 字段业务 Entity Schema，字段和类型不能被技术元数据污染。
 3. `tenant_id`、模型版本、索引版本、Prompt 版本、审批状态和字段别名属于技术元数据。
 4. 使用一个确定性的 LangGraph Workflow，所有路由由 Python 条件决定。
 5. PostgreSQL 是审核事实、案例、目录、索引状态、评估和训练注册信息的唯一事实源。
@@ -77,7 +77,7 @@ mock Adapter。外部失败追加 PostgreSQL attempt/audit，不回滚识别或�
 
 ### 3.3 Vision Extraction
 
-Vision Provider 返回严格 Pydantic/JSON Schema 校验后的 `InvoiceExtraction`。Schema 来自 `docs/invoice-schema.md` 对应的业务字段定义，增票和非增票为互斥分支，字段采用 required-but-nullable。视觉证据不足时可以返回 `null`、候选和异常，不能用历史值填补。
+Vision Provider 返回严格 Pydantic/JSON Schema 校验后的 `InvoiceExtraction`。当前 Schema 是 `docs/invoice-schema.md` 定义的固定 19 字段对象，字段采用 required-but-nullable。视觉证据不足时可以返回 `null`、候选和异常，不能用历史值填补。
 
 当前支持 OpenAI Provider 和千问兼容 Provider。Provider 只在 `infrastructure` 层实现，支持超时、有限指数退避、临时错误重试、限流、熔断、脱敏和请求审计，不保存 Chain-of-Thought。
 

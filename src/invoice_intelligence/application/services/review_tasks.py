@@ -250,6 +250,15 @@ class ReviewTaskService:
     ) -> ReviewSubmissionResult:
         task = await self.get_task(context, identifier)
         now = self._now()
+        if correction.reviewer_id != context.actor_id:
+            raise ResourceConflictError("Review actor does not match trusted context")
+        if await self._workflow.is_review_submission_registered(
+            task.run_id, correction, idempotency_key, context.tenant_id
+        ):
+            return ReviewSubmissionResult(
+                task=task,
+                run=await self._workflow.get_run(task.run_id, context.tenant_id),
+            )
         if task.status is ReviewTaskStatus.SUBMITTED:
             run = await self._workflow.submit_review(
                 task.run_id,
@@ -274,6 +283,9 @@ class ReviewTaskService:
             idempotency_key=idempotency_key,
             tenant_id=context.tenant_id,
             trace_id=context.trace_id,
+            review_id=task.review_id,
+            expected_review_revision=expected_revision,
+            review_lease_token=lease_token,
         )
         updated = await self.get_task(context, task.review_id)
         return ReviewSubmissionResult(task=updated, run=run)

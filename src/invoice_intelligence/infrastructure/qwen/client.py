@@ -7,6 +7,7 @@ import re
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any, TypeVar
+from urllib.parse import urlsplit, urlunsplit
 
 from openai import (
     APIConnectionError,
@@ -156,6 +157,7 @@ class QwenRemoteClient:
             if rerank_base_url is not None
             else None
         )
+        self._rerank_base_url = rerank_base_url
         self._max_retries = max_retries
         self._backoff_base_seconds = backoff_base_seconds
         self._backoff_max_seconds = backoff_max_seconds
@@ -258,15 +260,27 @@ class QwenRemoteClient:
         )
 
     async def rerank(self, *, model: str, body: Mapping[str, Any]) -> object:
-        """Call the documented OpenAI-client POST /reranks extension."""
+        """Call the model-specific documented rerank endpoint."""
 
         client = self._rerank
         if client is None:
             raise QwenRemoteRequestError("Qwen rerank endpoint is not configured")
+        path = "/reranks"
+        if model == "qwen3.7-text-rerank":
+            parsed = urlsplit(self._rerank_base_url or "")
+            path = urlunsplit(
+                (
+                    parsed.scheme,
+                    parsed.netloc,
+                    "/api/v1/services/rerank/text-rerank/text-rerank",
+                    "",
+                    "",
+                )
+            )
         return await self._execute(
             "rerank",
             model,
-            lambda: client.post("/reranks", body=dict(body), cast_to=object),
+            lambda: client.post(path, body=dict(body), cast_to=object),
         )
 
     async def _execute(

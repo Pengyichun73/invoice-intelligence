@@ -5,10 +5,10 @@ from typing import Protocol, TypeVar
 
 from invoice_intelligence.domain.document import DocumentReference
 from invoice_intelligence.domain.extraction import ExtractionResult
+from invoice_intelligence.domain.json_types import JsonValue
 from invoice_intelligence.domain.workflow import (
     CorrectionEvent,
     HumanCorrection,
-    JsonValue,
     ReviewRequest,
     ValidationOutcome,
     ValidationRoute,
@@ -140,6 +140,11 @@ class WorkflowExecutionGateway(Protocol):
 
     async def get_state(self, identity: WorkflowIdentity) -> Mapping[str, object]:
         """Return the current checkpoint state for an authorized workflow identity."""
+
+        ...
+
+    async def get_pending_checkpoint_id(self, identity: WorkflowIdentity) -> str:
+        """Identify the exact interrupt accepting a human review decision."""
 
         ...
 

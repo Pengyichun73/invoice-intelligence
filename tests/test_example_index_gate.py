@@ -10,7 +10,19 @@ from invoice_intelligence.application.errors import WorkflowPersistenceError
 from invoice_intelligence.application.services.example_index_projection import (
     ExampleIndexProjectionService,
 )
-from invoice_intelligence.domain.examples import IndexVersion
+from invoice_intelligence.application.services.example_retrieval import (
+    HybridExampleRetrievalService,
+)
+from invoice_intelligence.domain.examples import (
+    ExampleCandidate,
+    ExampleEvidenceReference,
+    ExampleLabelType,
+    ExampleScope,
+    IndexVersion,
+    RetrievalRecallSource,
+    RetrievalScore,
+    RetrievedExample,
+)
 from invoice_intelligence.infrastructure.persistence.sqlalchemy_examples import (
     SQLAlchemyExampleRepository,
 )
@@ -18,6 +30,48 @@ from invoice_intelligence.infrastructure.persistence.sqlalchemy_models import (
     ExampleIndexProjectionRow,
     IndexVersionRow,
 )
+
+
+def test_value_blind_projection_removes_prior_values_and_free_text() -> None:
+    candidate = ExampleCandidate(
+        example_id="example-1",
+        scope=ExampleScope(
+            tenant_id="tenant-a",
+            document_type="invoice",
+            field_path="invoice_number",
+            schema_version="3.0.0",
+            catalog_version="catalog-v1",
+        ),
+        label_type=ExampleLabelType.CORRECTED,
+        redacted_model_value="OLD-ERROR-999",
+        redacted_reviewed_value="OLD-TRUTH-999",
+        redacted_correction_reason="old value OLD-TRUTH-999",
+        vendor_fingerprint=None,
+        template_fingerprint="template-1",
+        evidence_reference=ExampleEvidenceReference(document_reference="document-1"),
+        redacted_index_text="seed",
+        redaction_policy_version="v1",
+        index_version=IndexVersion("field-pattern-v1-test"),
+        last_seen_at=datetime.now(UTC),
+    )
+    blinded = ExampleIndexProjectionService._value_blind_candidate(candidate)
+    text = ExampleIndexProjectionService._build_index_text(blinded)
+    assert blinded.redacted_model_value is None
+    assert blinded.redacted_reviewed_value is None
+    assert blinded.redacted_correction_reason == "reviewed_correction"
+    assert "OLD-ERROR-999" not in text
+    assert "OLD-TRUTH-999" not in text
+    reference = HybridExampleRetrievalService._prompt_reference(
+        RetrievedExample(
+            candidate=candidate,
+            score=RetrievalScore(dense=0.8, sparse=None, fusion=None, rerank=None),
+            rank=1,
+            recall_sources=(RetrievalRecallSource.DENSE,),
+        )
+    )
+    assert reference.model_value is None
+    assert reference.reviewed_value is None
+    assert reference.correction_reason == "reviewed_correction"
 
 
 @pytest.mark.asyncio

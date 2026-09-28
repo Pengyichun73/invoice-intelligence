@@ -52,6 +52,7 @@ class QwenPayloadGuard:
                 context.correction_events
             ),
             reviewed_examples=context.reviewed_examples,
+            focus_field_paths=context.focus_field_paths,
             field_semantic_catalog=context.field_semantic_catalog,
             budget=context.budget,
         )

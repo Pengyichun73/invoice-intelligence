@@ -93,11 +93,28 @@ def _dependencies(sink: _AuditSink) -> Any:
             api_prefix="/api/v1",
             environment=Environment.PRODUCTION,
             dev_tenant_id=None,
+            auth_mode="oidc",
         ),
         authorization_policy=AuthorizationPolicy(),
         auth_context_provider=_AuthProvider(),
         security_audit_sink=sink,
     )
+
+
+@pytest.mark.asyncio
+async def test_oidc_mode_does_not_fall_back_to_development_identity() -> None:
+    sink = _AuditSink()
+    dependencies = _dependencies(sink)
+    dependencies.settings.environment = Environment.DEVELOPMENT
+    dependencies.settings.dev_tenant_id = "demo-tenant"
+    request = _request("/api/v1/runs/run-1", [])
+
+    async def unreachable(_: Request) -> Response:
+        pytest.fail("OIDC request without token reached the route")
+
+    response = await enforce_request_security(request, unreachable, dependencies)
+
+    assert response.status_code == 401
 
 
 def test_authorization_policy_maps_roles_and_never_uses_reviewer_input() -> None:
@@ -362,5 +379,38 @@ async def test_oidc_provider_validates_signature_issuer_audience_and_claims() ->
         )
         with pytest.raises(UnauthorizedError):
             await provider.authenticate(wrong_audience)
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_oidc_provider_ignores_encryption_keys_in_jwks() -> None:
+    import httpx
+
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    signing_key = json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(private_key.public_key()))
+    signing_key.update({"kid": "signing", "alg": "RS256", "use": "sig"})
+    encryption_key = {**signing_key, "kid": "encryption", "alg": "RSA-OAEP", "use": "enc"}
+    provider = OIDCJWTAuthContextProvider(
+        issuer="https://id.example/realms/invoice",
+        audience="invoice-intelligence-api",
+        jwks_url="https://id.example/certs",
+        client_id="invoice-intelligence-console",
+        algorithms=("RS256",),
+        tenant_claim="tenant_id",
+        reviewer_claim="reviewer_id",
+        jwks_cache_seconds=300,
+        timeout_seconds=1,
+        tls_verify=True,
+    )
+    await provider._client.aclose()
+    provider._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, json={"keys": [signing_key, encryption_key]})
+        )
+    )
+    try:
+        await provider._refresh_keys()
+        assert set(provider._keys) == {"signing"}
     finally:
         await provider.aclose()

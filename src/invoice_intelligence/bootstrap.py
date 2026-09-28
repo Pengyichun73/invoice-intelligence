@@ -277,6 +277,9 @@ from invoice_intelligence.infrastructure.persistence.sqlalchemy_promotion_eviden
 from invoice_intelligence.infrastructure.persistence.sqlalchemy_repository import (
     SQLAlchemyBusinessRepository,
 )
+from invoice_intelligence.infrastructure.persistence.sqlalchemy_extraction_queue import (
+    SQLAlchemyExtractionQueueRepository,
+)
 from invoice_intelligence.infrastructure.persistence.sqlalchemy_review_tasks import (
     SQLAlchemyReviewTaskRepository,
 )
@@ -338,6 +341,7 @@ class ApplicationContainer:
     document_ingestion_service: DocumentIngestionService
     vision_extraction_service: VisionExtractionService[InvoiceExtraction] | None
     business_repository: SQLAlchemyBusinessRepository
+    extraction_queue_repository: SQLAlchemyExtractionQueueRepository
     review_task_repository: SQLAlchemyReviewTaskRepository
     accounting_service: AccountingService
     reviewed_example_repository: SQLAlchemyReviewedExampleRepository
@@ -418,7 +422,14 @@ def build_container(
     resolved_settings = settings or get_settings()
     resolved_vision_prompt_registry = vision_prompt_registry or LocalVisionPromptRegistry()
     business_engine = create_business_engine(
-        resolved_settings.resolved_business_database_url.get_secret_value()
+        resolved_settings.resolved_business_database_url.get_secret_value(),
+        connect_timeout_seconds=(
+            resolved_settings.business_database_connect_timeout_seconds
+        ),
+        pool_timeout_seconds=resolved_settings.business_database_pool_timeout_seconds,
+        statement_timeout_seconds=(
+            resolved_settings.business_database_statement_timeout_seconds
+        ),
     )
     evaluation_repository = SQLAlchemyEvaluationRepository(business_engine)
     evaluation_job_service = EvaluationJobService(
@@ -689,6 +700,7 @@ def build_container(
         business_engine,
         extraction_codec,
     )
+    extraction_queue_repository = SQLAlchemyExtractionQueueRepository(business_engine)
     transaction_analysis_service = TransactionAnalysisService(
         SQLAlchemyTransactionAnalysisRepository(business_engine),
         MockTransactionRuleEngine(),
@@ -1273,6 +1285,7 @@ def build_container(
             ocr_provider=ocr_provider,
             raw_ocr_providers=resolved_raw_ocr_providers_tuple,
             ocr_comparison_service=ocr_comparison_service,
+            targeted_reread_mode=resolved_settings.memory_targeted_reread_mode,
             prompt_context_budget=PromptContextBudget(
                 max_examples_total=resolved_settings.vision_prompt_max_examples_total,
                 max_examples_per_region=(resolved_settings.vision_prompt_max_examples_per_region),
@@ -1420,6 +1433,7 @@ def build_container(
         document_ingestion_service=ingestion_service,
         vision_extraction_service=extraction_service,
         business_repository=business_repository,
+        extraction_queue_repository=extraction_queue_repository,
         review_task_repository=review_task_repository,
         accounting_service=accounting_service,
         reviewed_example_repository=reviewed_example_repository,
@@ -1753,4 +1767,8 @@ async def open_extraction_workflow_service(
             query_repository=repository,
             idempotency_repository=repository,
             privacy_telemetry=container.privacy_telemetry,
+            extraction_queue=(
+                container.extraction_queue_repository
+                if container.settings.extraction_async_enabled else None
+            ),
         )

@@ -13,6 +13,7 @@
     "@vitejs/plugin-vue": "latest",
     "@vueuse/motion": "^3.0.3",
     "lucide-vue-next": "latest",
+    "oidc-client-ts": "^3.5.0",
     "vite": "latest",
     "vue": "latest"
   }

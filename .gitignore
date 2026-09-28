@@ -3,9 +3,11 @@
 .env.*
 !.env.example
 !.env.compose.example
+!frontend/.env.acceptance.example
 secrets/*.txt
 deploy/nginx/certs/*.key
 deploy/nginx/certs/*.crt
+deploy/nginx/certs/*.pfx
 
 # Python
 .venv/
@@ -32,6 +34,12 @@ data/
 artifacts/
 .data/
 .tmp/
+.test-tmp/
+.local/
+.pytest-*/
+pytest-cache-files-*/
+p0-validation-temp/
+.tmp*/
 .test-tmp/
 
 # External reference repositories

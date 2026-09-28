@@ -1,12 +1,12 @@
 <script setup>
 import { onMounted, reactive, ref } from 'vue'
-import { RefreshCw } from 'lucide-vue-next'
+import { RefreshCw, Search, X } from 'lucide-vue-next'
 import ActionDialog from '../components/ActionDialog.vue'
 import PageHeader from '../components/PageHeader.vue'
 import PaginationBar from '../components/PaginationBar.vue'
 import ResourceState from '../components/ResourceState.vue'
 import StatusBadge from '../components/StatusBadge.vue'
-import { displayLabel, formatDate, fullText, safeText } from '../api/client'
+import { displayLabel, formatDate, formatFieldValue, fullText, safeText } from '../api/client'
 import { governanceApi } from '../api/governance'
 import { usePagedResource } from '../composables/usePagedResource'
 import { useNotifications } from '../composables/useNotifications'
@@ -15,12 +15,33 @@ const notices = useNotifications()
 
 const labelType = ref('')
 const validFilter = ref('true')
+const runDraft = ref('')
+const fieldDraft = ref('')
+const runFilter = ref('')
+const fieldFilter = ref('')
 const detail = ref(null)
 const selectedExampleId = ref('')
 const detailLoading = ref(false)
 const projections = reactive({ payload: null, loading: false, error: '', cursor: null, history: [] })
 const action = reactive({ open: false, item: null, busy: false })
-const pager = usePagedResource((cursor) => governanceApi.examples({ label_type: labelType.value, is_valid: validFilter.value === '' ? null : validFilter.value, limit: 20, cursor }))
+const pager = usePagedResource((cursor) => governanceApi.examples({
+  label_type: labelType.value,
+  is_valid: validFilter.value === '' ? null : validFilter.value,
+  run_id: runFilter.value,
+  field_path: fieldFilter.value,
+  limit: 20,
+  cursor,
+}))
+function applySearch() {
+  runFilter.value = runDraft.value.trim()
+  fieldFilter.value = fieldDraft.value.trim()
+  refresh()
+}
+function clearSearch() {
+  runDraft.value = ''
+  fieldDraft.value = ''
+  applySearch()
+}
 async function refresh() {
   detail.value = null
   selectedExampleId.value = ''
@@ -95,7 +116,8 @@ onMounted(refresh)
 <template>
   <div>
     <PageHeader eyebrow="案例治理" title="案例库" description="正例、纠错例与确认错误案例严格分区展示。"><button class="secondary-btn" @click="refresh"><RefreshCw :size="16" />刷新</button></PageHeader>
-    <section class="toolbar"><label>案例类型<select v-model="labelType" @change="refresh"><option value="">全部类型</option><option value="confirmed_correct">确认正确</option><option value="corrected">人工纠正</option><option value="confirmed_incorrect">确认错误（负例）</option></select></label><label>有效状态<select v-model="validFilter" @change="refresh"><option value="true">有效</option><option value="false">已禁用/失效</option><option value="">全部</option></select></label><span class="context-note">负例不会进入正确案例区域</span></section>
+    <section class="toolbar"><label>案例类型<select v-model="labelType" @change="refresh"><option value="">全部类型</option><option value="confirmed_correct">确认正确</option><option value="corrected">人工纠正</option><option value="confirmed_incorrect">确认错误（负例）</option></select></label><label>有效状态<select v-model="validFilter" @change="refresh"><option value="true">有效</option><option value="false">已禁用/失效</option><option value="">全部</option></select></label><form class="admission-run-filter" @submit.prevent="applySearch"><label>Run ID<input v-model="runDraft" maxlength="64" placeholder="完整 Run ID" /></label><label>字段路径<input v-model="fieldDraft" maxlength="512" placeholder="如 buyer_name" /></label><button class="secondary-btn" type="submit"><Search :size="15" />查询</button><button v-if="runFilter || fieldFilter" class="icon-btn" type="button" title="清除筛选" @click="clearSearch"><X :size="17" /></button></form></section>
+    <div v-if="runFilter" class="alert neutral"><span>按来源 Run ID 筛选：<code>{{ runFilter }}</code>；合并案例详情可能显示首次来源 Run ID。</span></div>
     <div class="governance-split">
       <section class="surface list-surface">
         <ResourceState :loading="pager.state.loading" :error="pager.state.error" :empty="!pager.state.items.length" @retry="refresh">
@@ -122,7 +144,7 @@ onMounted(refresh)
               <div><dt>证据来源</dt><dd>第 {{ detail.evidence_reference?.page_number || '-' }} 页 · {{ displayLabel(detail.evidence_reference?.evidence_source, 'evidence_source') }}</dd></div>
             </dl>
             <h3 class="subheading">完整案例数据</h3>
-            <div class="value-comparison"><div><span>模型解析值</span><strong>{{ fullText(detail.model_value) }}</strong></div><div><span>人工审核值</span><strong>{{ fullText(detail.reviewed_value) }}</strong></div></div>
+            <div class="value-comparison"><div><span>模型解析值</span><strong>{{ formatFieldValue(detail.field_path, detail.model_value) }}</strong></div><div><span>人工审核值</span><strong>{{ formatFieldValue(detail.field_path, detail.reviewed_value) }}</strong></div></div>
             <div v-if="detail.correction_reason" class="full-reason"><strong>审核原因</strong><p>{{ fullText(detail.correction_reason) }}</p></div>
             <section class="projection-section">
               <div class="section-head"><div><span>索引投影状态</span><h3>案例索引投影</h3></div><button class="secondary-btn" :disabled="projections.loading" @click="loadProjections(true)"><RefreshCw :size="15" />刷新</button></div>

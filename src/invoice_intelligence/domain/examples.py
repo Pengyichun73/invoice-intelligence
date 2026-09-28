@@ -473,7 +473,7 @@ class RetrievalContext:
 
 @dataclass(frozen=True, slots=True)
 class ReviewedExamplePromptReference:
-    """Minimal redacted case reference allowed in checkpoint state and Vision prompts."""
+    """Value-free case reference; value slots remain for old checkpoint decoding."""
 
     example_id: str
     document_type: str
@@ -502,7 +502,7 @@ class ReviewedExamplePromptReference:
 
 @dataclass(frozen=True, slots=True)
 class ReviewedExamplePromptContext:
-    """Bounded Prompt projection; historical values remain non-authoritative priors."""
+    """Bounded value-free case-pattern context for a second Vision pass."""
 
     trace_ids: tuple[str, ...]
     verified_correct_examples: tuple[ReviewedExamplePromptReference, ...]

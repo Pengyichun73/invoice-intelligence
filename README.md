@@ -1,6 +1,34 @@
 # Invoice Intelligence
 
+隔离双人验收使用项目自带 Keycloak：见
+[`docs/docker-deployment.md`](docs/docker-deployment.md) 的“隔离 OIDC 双人验收”。
+前端通过 Authorization Code + PKCE 登录；后端仍只信任经签名验证的
+`tenant_id`、`reviewer_id` 和角色 claim。默认开发环境不受验收配置影响。
+
 ## 当前项目状态
+
+隔离验收后端、Worker、依赖和 GPU OCR 可用同一个脚本管理：
+`./scripts/manage-acceptance.ps1 -Action start`。默认 `Auto` 模式先复用已运行的宿主机
+`127.0.0.1:8077`；不存在时启动独立 Docker GPU OCR，容器内同样使用 8077、`gpu:0`
+和 `conf/ocr/ppocrv6_small_v1.yaml`。`-Action status/stop` 仅管理隔离 Compose，
+不终止已有宿主 OCR；首次 Docker OCR 启动可能需拉取较大的官方 GPU 基础镜像和模型。
+完整命令与端口边界见 [`docs/docker-deployment.md`](docs/docker-deployment.md)。
+记忆增强的价值、安全边界及分阶段改造见
+[`docs/memory-extraction-roadmap.md`](docs/memory-extraction-roadmap.md)；相似案例不等于同一发票。
+值盲案例 Prompt、新建 `field-pattern-v1-` 索引投影和默认关闭的区域重读已具备代码入口；
+隔离标注冻结使用 `scripts/freeze_memory_gold.py`，输入输出须放在受控存储。
+`MemoryBenefitEvaluationService` 已提供逐张发票的真实三变体提取调用，跳过评估产物与检索
+Telemetry 写入，要求完整当前图片真值、运行版本和活动值盲索引一致；输出仅含脱敏逐字段判定。
+它尚未接入独立批量运行器，也未用完整标注集现场运行。shadow、灰度及异机备份未完成，
+不能宣称记忆已产生业务收益或生产可用。
+
+2026-09-27 新增隔离 Compose 的持久化异步提取路径：业务 PostgreSQL `0045` 队列迁移、
+共享 PostgreSQL Checkpointer、独立 `extraction-worker`、提取 `Idempotency-Key` 重放和前端
+`run_id` 会话恢复。隔离 Compose 已完成迁移、Keycloak 双账号与前端 PKCE 登录配置；
+两个验收账号的 OIDC PKCE、JWT 校验、API 角色隔离和浏览器页面入口已验证；
+实际审核事实、准入、Milvus 投影及第二张发票召回仍**尚未完成本轮隔离验收**。
+本地 Uvicorn 默认继续同步执行。
+首阶段验收清单与明确阻塞见 [`docs/project-status.md`](docs/project-status.md)。
 
 截至 `2026-09-25`，核心提取、Human Review Task、可信记忆治理、S3-compatible 存储主体、
 Training Registry 和独立财务 Domain 已有实现；Evaluation Job 的 PostgreSQL 队列、Scheduler 与
@@ -10,14 +38,14 @@ Training Registry 和独立财务 Domain 已有实现；Evaluation Job 的 Postg
 授权 Reviewer 仅可将其审计升级为 `escalated`。统一完成度、阻塞项和任务优先级见
 [`docs/project-status.md`](docs/project-status.md)，不得仅根据类、路由或容器名称判断能力已完成。
 
-P0 部署核对已确认源码 Alembic head 为 `20260924_0044_code_harness_repair_route`，
+9 月 25 日的 P0 部署核对确认当时源码 Alembic head 为 `20260924_0044_code_harness_repair_route`，
 并修正了 password file 末尾换行的 preflight 判断；Compose 的对象存储 endpoint 可由
 `OBJECT_STORAGE_ENDPOINT_URL` 指定 HTTPS 地址；S3 启动检查会拒绝 Principal 数组中的公开授权。
 应用对象存储凭据可由 `OBJECT_STORAGE_APP_ACCESS_KEY` 与 `OBJECT_STORAGE_APP_SECRET_FILE`
 独立提供；示例配置仍回退到开发 MinIO 凭据。
 生命周期 Worker 可在完成业务 migration 后独立指向外部 S3，开发 MinIO 须先完成 Bucket 初始化。
-当前 Docker daemon 可连接，旧项目依赖容器仍运行，运行容器的 PostgreSQL 服务名与工作树
-Compose 定义不一致。经确认，原业务库已从实际 `0031` 升至唯一 head `0044`；切换前备份已在
+在 9 月 25 日的核对中 Docker daemon 可连接，旧项目依赖容器仍运行；本轮 daemon 不可连接。此前运行容器的 PostgreSQL 服务名与工作树
+Compose 定义不一致。经确认，原业务库当时已从实际 `0031` 升至 `0044`；新 `0045` 尚未在该库迁移。切换前备份已在
 独立数据库恢复验证，关键事实计数、租户关联及约束检查通过。独立 Compose project 的 API、
 Index Worker、PostgreSQL 和 Milvus 已以合成配置运行并完成健康检查与重启演练；该环境不代表
 原业务流量已切换，旧项目仍无 API/Worker。实际命令、备份校验及剩余门禁见
@@ -80,15 +108,21 @@ development 默认使用 `LocalFileStorage`；设置
 `INVOICE_INTELLIGENCE_FILE_STORAGE_BACKEND=s3` 后使用 S3-compatible Adapter。业务对象固定分为
 `invoice-originals`、`invoice-rendered`、`invoice-derived-text` 三个 private Bucket，名称可配置但
 必须互不相同。production 禁止 Local、HTTP endpoint、关闭 TLS 和默认 HMAC key。
+Compose 的 Local 模式将 API 与提取 Worker 的存储根目录统一为共享 `invoice_documents` 卷中的
+`/var/lib/invoice-intelligence/documents`；容器私有 `/app/.data/documents` 不可用于异步提取。
 
 MinIO 使用 `minio/minio:RELEASE.2025-04-22T22-12-26Z`。启动业务 Bucket 和生命周期 Worker：
 
 ```powershell
 docker compose --env-file .env.compose --profile object-storage up -d `
-  object-storage object-storage-init storage-lifecycle-worker
+  object-storage storage-lifecycle-worker
 python -m alembic upgrade head
 python -m invoice_intelligence.workers.storage_lifecycle
 ```
+
+由于本地环境不依赖 `minio/mc` 初始化镜像，首次启动 MinIO 后请在
+`http://localhost:9001` 手工创建三个 private Bucket：`invoice-originals`、
+`invoice-rendered` 和 `invoice-derived-text`。
 
 从已有 Local 数据切换到 MinIO/S3 前，先将 backend 配为 `s3` 并执行：
 
@@ -148,6 +182,15 @@ PostgreSQL 事务切换注册状态。门禁还要求冻结的同租户评估数
 `INVOICE_INTELLIGENCE_LOG_FILE_ENABLED` 显式切换。当前 Compose 明确开启文件输出，业务 API/Worker
 将 `/app/logs` 映射到项目 `./logs`；设 `LOG_FILE_ENABLED=false` 可关闭 Compose 文件输出。
 应用日志是 JSONL；Uvicorn 或其他外部进程自己的非 JSON 输出不属于此文件流。
+应用 JSONL 与安全文本日志的时间戳使用上海时间（`+08:00`）；诊断命令仍接受带时区的 ISO 8601。
+旧日志不会被改写。新失败日志记录可信 Trace、租户、HTTP 方法与固定路由模板、状态码、
+请求耗时、异常包装类型、底层驱动异常类型、连接失效标记及合法 SQLSTATE；安全审计落库失败
+也记录同类数据库元数据。不记录 SQL、参数、请求 Body、发票值或异常正文。诊断包可按 Trace
+读取这些白名单字段；422 另记录校验错误数量和首个错误类型，不记录提交值或任意字段名。
+SQLSTATE 缺失表示驱动未提供，不代表没有数据库故障。
+若 API 在 Windows 主机启动，`.env` 的 `localhost:5432` 必须有本机数据库监听；当前 Compose
+只在容器网络内提供 PostgreSQL，未向主机发布 5432。使用 Compose 时应调用其 API 容器，
+不要同时运行指向未开放 `localhost:5432` 的主机 API。
 
 本地开发排障可直接从该日志目录生成限长诊断包：
 
@@ -193,6 +236,16 @@ auth/vector/mlops profile 和阻塞项见 [`docs/docker-deployment.md`](docs/doc
 只生成计划，不能据此宣称已完成生产恢复验收。
 
 前置环境：Python 3.12、Node.js/npm、Docker Desktop。项目根目录固定为 `G:\work\ai`。
+
+### 本地目录约定
+
+- `src/`、`frontend/`、`migrations/`、`deploy/`、`scripts/`、`docs/`：源码、前端、迁移、部署、脚本和文档。
+- `secrets/`：本地测试密码文件，不进入 Git。
+- `logs/`、`artifacts/`、`.data/`：运行日志、验收产物和本地数据。
+- `.local/`：测试临时目录和本地缓存，不进入 Git。
+- `.venv/`、`.venv-ocr/`：Python 虚拟环境。
+
+根目录不应放置临时密码、测试缓存或运行产物。
 
 ### 1. 首次准备配置
 
@@ -273,6 +326,8 @@ python -m invoice_intelligence.workers.memory_admission
 
 `Ctrl+C` 会停止领取新任务，并等待当前已领取批次完成。多副本可使用不同的
 `INVOICE_INTELLIGENCE_MEMORY_ADMISSION_WORKER_ID`；留空时自动使用 hostname 与 PID。
+Docker Compose 的 `api` 与 `memory-admission` 分别构建和运行；准入 Repository 改动后必须
+让两者运行同一新版镜像。只重新构建 API 不会修复仍在旧 Worker 中执行的评估任务。
 
 冲突关闭后的重评估请求由独立 Worker 消费；先升级到
 `20260924_0036_conflict_reevaluation`，再启动
@@ -328,7 +383,8 @@ npm run dev
 ```
 
 后续启动只需 `npm run dev`。浏览器访问 `http://127.0.0.1:5173`，Vite 将 `/api` 代理到
-`http://127.0.0.1:8000`。
+Docker 发布的 `http://[::1]:8000`，避免被同端口运行的本机 Uvicorn 分流。若 Docker 使用其他
+API 端口，可在启动前设置 `$env:VITE_API_PROXY_TARGET='http://[::1]:<端口>'`。
 
 前端任务中枢按租户可信上下文提供九个视图，并通过顶部导航分为“工作台、可信记忆、字段语义、
 运行治理”四个区域：总览、提取工作台、记忆准入、案例库、字段语义、冲突、索引、评估和审计。
@@ -350,6 +406,11 @@ npm run dev
 页面明确区分“已登记 indexed”与“实时 Milvus 健康”。
 页面不提供 `tenant_id` 输入。已授权的提取结果、人工审核值和案例值按业务需要完整展示，
 不使用星号遮蔽或字符截断；图片 Base64、API Key、完整 Prompt、向量和跨租户数据仍禁止展示。
+提取工作台直接显示 `run_id`；完成的 Run 可在只读弹窗查看全部提取字段。准入详情也可按同一
+`run_id` 查看这些字段和可读取的准入状态；未审核字段仅标为提取结果，不因此进入长期案例库。
+案例、准入、字段目录和冲突列表提供租户内精确筛选；Run ID 从保留的来源审核事实匹配，合并案例
+可能显示首次来源的 Run ID。列表按最近更新时间降序分页；治理写入后
+保留当前筛选条件。界面日期显示为 `YYYY-MM-DD HH:mm:ss`，API 继续传输带时区的 ISO 8601。
 
 “总览”是面向客户的默认入口：第一屏以风险优先队列展示待准入、已隔离和开放字段冲突，
 同时展示有效案例、多源识别和处理链路状态。总览数据只调用现有
@@ -492,7 +553,7 @@ INVOICE_INTELLIGENCE_OPENAI_CIRCUIT_FAILURE_THRESHOLD=5
 INVOICE_INTELLIGENCE_OPENAI_CIRCUIT_RECOVERY_SECONDS=30
 INVOICE_INTELLIGENCE_OPENAI_VISION_SCHEMA_MAX_RETRIES=2
 INVOICE_INTELLIGENCE_QWEN_VISION_SCHEMA_MAX_RETRIES=2
-INVOICE_INTELLIGENCE_VISION_PROMPT_VERSION=invoice-vision-extraction-v2
+INVOICE_INTELLIGENCE_VISION_PROMPT_VERSION=invoice-vision-extraction-v3-value-blind
 ```
 
 ## 当前边界
@@ -846,13 +907,13 @@ Milvus 完整性、备份恢复和告警验收仍由后续隔离环境任务单�
 - `POST /api/v1/reviews/{review_id}/submit`：提交审核，必须携带 `Idempotency-Key`
 - `POST /api/v1/reviews/recover-expired`：将本租户过期 lease 恢复为可重新领取状态
 - `POST /api/v1/reviews/{run_id}`：deprecated 兼容提交接口，必须携带 `Idempotency-Key`
-- `GET /api/v1/memory/admissions`：按状态分页查询租户记忆准入记录
+- `GET /api/v1/memory/admissions`：按状态、精确 `run_id` 和 `field_path` 在可信租户内按更新时间倒序分页；省略状态可查看全部状态
 - `GET /api/v1/memory/admissions/{admission_id}`：查询质量信号与完整准入决策链
 - `POST /api/v1/memory/admissions/{admission_id}/approve`：人工批准，必须携带当前 revision 与 `Idempotency-Key`
 - `POST /api/v1/memory/admissions/{admission_id}/reject`：人工拒绝，必须携带当前 revision 与 `Idempotency-Key`
 - `POST /api/v1/memory/admissions/{admission_id}/quarantine`：人工隔离，必须携带当前 revision 与 `Idempotency-Key`
 - `GET /api/v1/memory/audits`：按可信租户读取统一治理审计，支持 operation、resource、Trace、时间范围和游标筛选
-- `GET /api/v1/memory/examples`
+- `GET /api/v1/memory/examples`：可按精确 `run_id`、`field_path` 等条件在可信租户内按最近出现时间倒序分页
 - `GET /api/v1/memory/examples/{example_id}`
 - `GET /api/v1/memory/examples/{example_id}/projections`：分页查询单案例 PostgreSQL 投影状态，可按 `index_version` 和 `status` 筛选
 - `POST /api/v1/memory/examples/{example_id}/disable`：必须携带 `Idempotency-Key`
@@ -1006,8 +1067,27 @@ Catalog/Index Version 和投影状态。人工提交先形成不可变审核事�
 `corrected` 与 `confirmed_incorrect` 分别进入正确、纠错和独立负例区域。
 
 案例检索 Scope 固定包含 `tenant_id + document_type + field_path + schema_version + catalog_version`，
-并在可获得模板指纹时执行 `template_fingerprint` 精确过滤；配置
+模板指纹仅保留为案例元数据，不作为 Milvus 硬过滤条件；配置
 `INVOICE_INTELLIGENCE_REVIEWED_EXAMPLE_RETENTION_DAYS` 后，还会按 `last_seen_at` 应用实时检索窗口。
+默认检索上限覆盖固定的 19 个发票字段；如显式设置 `INVOICE_INTELLIGENCE_EXAMPLE_RETRIEVAL_MAX_FIELDS`，
+可调整此上限。千问重排按 `qwen3-rerank` 与 `qwen3.7-text-rerank` 分别使用对应的官方接口。
+隔离验收的提取 Worker 使用宿主机 PaddleX `8077`；启动前需从容器核对 OCR 可达并确认返回文本框。
+当前图片的单一可读 Vision 候选只有在同页、已接受绑定、带定位的独立 OCR 候选一致时才会补齐缺值，
+随后仍由原确定性校验决定是否需人工审核；OCR 不可用、冲突或仅有历史案例时不自动补值。
+第二次 Vision 仅额外聚焦基线待审且召回了案例的字段，历史值仍不能替代当前图片。
+`run_bad4836e9e18473b9a6317b274813e60` 的召回前后均为 15 个非空字段和 5 个待审字段，
+未证明记忆收益；需在独立人工真值集上比较 Vision、Vision+OCR 和 Vision+OCR+记忆。
+离线门禁 `python scripts/measure_memory_benefit.py <manifest.jsonl>` 只读取三变体配对的脱敏判定：
+每行需有 `case_id`、`template_group`、`variant`、`document_checksum`、完整人工真值标记
+`gold_complete=true`、`ocr_healthy`、五个版本键（`schema_version`、`model_version`、
+`prompt_version`、`catalog_version`、`index_version`）以及 19 个字段各自的
+`review_required`、`auto_accepted`、`correct` 布尔值；不得包含发票原值。
+不足 20 张或少于 3 类模板不宣称通过；记忆相对 OCR 组须降审至少 20%、无错放且准确字段数不下降。
+逐张调用入口位于 `src/invoice_intelligence/application/services/memory_benefit_evaluation.py`：
+Vision 关闭 OCR，Vision+OCR 关闭记忆，记忆组从 OCR 基线的待审字段中选择已召回案例并
+调用现有提取引擎及区域重读。它校验冻结文档 checksum、19 字段图片证据、运行版本、
+活动值盲索引和 OCR 可用性，拒绝不完整配对；目前未提供面向真实数据的 CLI 或 API，
+不得将此服务的单元测试当作已完成的 20 张现场验收。
 Milvus 案例 Collection 保存对应 Catalog、模板指纹和时间戳 Scalar 字段，但只保存脱敏文本与向量。
 查询仍会回查 PostgreSQL Admission、审核和有效状态，历史值永远不能覆盖当前图片证据。
 

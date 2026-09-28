@@ -251,7 +251,18 @@ class HybridExampleRetrievalService:
         self._telemetry_context = telemetry_context
         self._threshold_version = threshold_version or policy.version.value
 
-    async def retrieve(self, request: HybridRetrievalInput) -> RetrievalContext:
+    async def active_index_version(self, tenant_id: str) -> IndexVersion | None:
+        """Read the active tenant index without producing retrieval telemetry."""
+
+        return await self._projection_repository.get_active_version(tenant_id)
+
+    async def retrieve(
+        self,
+        request: HybridRetrievalInput,
+        *,
+        persist_telemetry: bool = True,
+        fail_on_error: bool = False,
+    ) -> RetrievalContext:
         """Return bounded positive examples and separately isolated hard negatives."""
 
         scope = request.scope
@@ -292,15 +303,11 @@ class HybridExampleRetrievalService:
                 stage["index_lookup_ms"] = self._elapsed_ms(stage_started)
                 if index_version is None:
                     context = self._empty_context(trace_id, scope, None)
-                    await self._persist_trace(
-                        context,
-                        outcomes,
-                        stage,
-                        created_at,
-                        started_at,
-                        succeeded=True,
-                        error_code=None,
-                    )
+                    if persist_telemetry:
+                        await self._persist_trace(
+                            context, outcomes, stage, created_at, started_at,
+                            succeeded=True, error_code=None,
+                        )
                     self._clear_trace(trace_id)
                     return context
 
@@ -331,19 +338,18 @@ class HybridExampleRetrievalService:
                     stage["hybrid_search_ms"] += outcome.hybrid_search_ms
                     stage["rerank_ms"] += outcome.rerank_ms
         except Exception as exc:
+            if fail_on_error:
+                self._clear_trace(trace_id)
+                raise
             logger.warning(
                 "Reviewed-example retrieval failed; continuing without historical context"
             )
             context = self._empty_context(trace_id, scope, index_version)
-            await self._persist_trace(
-                context,
-                outcomes,
-                stage,
-                created_at,
-                started_at,
-                succeeded=False,
-                error_code=self._safe_error_code(exc),
-            )
+            if persist_telemetry:
+                await self._persist_trace(
+                    context, outcomes, stage, created_at, started_at,
+                    succeeded=False, error_code=self._safe_error_code(exc),
+                )
             self._clear_trace(trace_id)
             return context
 
@@ -366,15 +372,11 @@ class HybridExampleRetrievalService:
             retrieval_policy_version=self._policy.version,
             retrieved_at=datetime.now(UTC),
         )
-        await self._persist_trace(
-            context,
-            outcomes,
-            stage,
-            created_at,
-            started_at,
-            succeeded=True,
-            error_code=None,
-        )
+        if persist_telemetry:
+            await self._persist_trace(
+                context, outcomes, stage, created_at, started_at,
+                succeeded=True, error_code=None,
+            )
         self._clear_trace(trace_id)
         return context
 
@@ -383,6 +385,9 @@ class HybridExampleRetrievalService:
         tenant_id: str,
         invoice: object | None,
         field_evidence: Sequence[FieldEvidence],
+        *,
+        persist_telemetry: bool = True,
+        fail_on_error: bool = False,
     ) -> ReviewedExamplePromptContext | None:
         """Retrieve a bounded Prompt projection for current baseline field evidence."""
 
@@ -426,11 +431,15 @@ class HybridExampleRetrievalService:
                         vendor_fingerprint=vendor_fingerprint,
                         template_fingerprint=template_fingerprint,
                         not_before=not_before,
-                    )
+                    ),
+                    persist_telemetry=persist_telemetry,
+                    fail_on_error=fail_on_error,
                 )
                 contexts.append(context)
             return self._to_prompt_context(tuple(contexts))
         except Exception:
+            if fail_on_error:
+                raise
             logger.warning(
                 "Extraction example retrieval failed; continuing without reviewed cases"
             )
@@ -613,9 +622,13 @@ class HybridExampleRetrievalService:
             field_path=candidate.scope.field_path,
             schema_version=candidate.scope.schema_version,
             label_type=candidate.label_type,
-            model_value=candidate.redacted_model_value,
-            reviewed_value=candidate.redacted_reviewed_value,
-            correction_reason=candidate.redacted_correction_reason,
+            model_value=None,
+            reviewed_value=None,
+            correction_reason=(
+                "reviewed_correction"
+                if candidate.redacted_correction_reason is not None
+                else None
+            ),
             index_version=candidate.index_version,
         )
 

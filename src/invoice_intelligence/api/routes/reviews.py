@@ -213,6 +213,9 @@ async def submit_claimed_review(
     return ReviewTaskSubmissionResponse(
         task=await _detail(service, context, result.task),
         run=present_run(result.run),
+        execution_status=(
+            "queued" if result.run.status.value == "processing" else "finished"
+        ),
     )
 
 

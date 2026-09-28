@@ -1,6 +1,7 @@
 """HTTP contracts for production human-review task operations."""
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -93,6 +94,7 @@ class ReviewTaskSubmissionResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     task: ReviewTaskDetailResponse
     run: ExtractionRunResponse
+    execution_status: Literal["queued", "finished"] = "finished"
 
 
 class ReviewTaskRecoveryResponse(BaseModel):

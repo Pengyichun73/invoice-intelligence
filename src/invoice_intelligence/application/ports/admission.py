@@ -347,6 +347,8 @@ class MemoryAdmissionRepository(Protocol):
         *,
         limit: int,
         after_example_id: str | None = None,
+        run_id: str | None = None,
+        field_path: str | None = None,
     ) -> tuple[MemoryAdmissionRecord, ...]:
         """Page tenant-owned records for governance without changing eligibility."""
 
@@ -493,6 +495,7 @@ class MemoryConflictRepository(Protocol):
         alias_conflicts_only: bool,
         limit: int,
         after_conflict_id: str | None = None,
+        field_path: str | None = None,
     ) -> tuple[MemoryConflictRecord, ...]:
         """Page tenant conflicts without exposing another tenant's records."""
 

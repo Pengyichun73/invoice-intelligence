@@ -142,3 +142,20 @@ export function buildReviewSubmission({
   }
   return payload
 }
+
+export function buildReviewSubmissionEnvelope({ expectedRevision, leaseToken, correction }) {
+  if (!Number.isInteger(expectedRevision) || expectedRevision < 1) {
+    throw new ReviewSubmissionError('审核任务版本无效')
+  }
+  if (typeof leaseToken !== 'string' || leaseToken.length !== 64) {
+    throw new ReviewSubmissionError('审核租约无效，请重新领取审核任务')
+  }
+  if (!correction || typeof correction !== 'object') {
+    throw new ReviewSubmissionError('审核决定不能为空')
+  }
+  return {
+    expected_revision: expectedRevision,
+    lease_token: leaseToken,
+    correction,
+  }
+}

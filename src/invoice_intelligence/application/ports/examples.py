@@ -109,6 +109,7 @@ class ReviewedExampleRepository(Protocol):
         is_valid: bool | None,
         limit: int,
         after_example_id: str | None = None,
+        run_id: str | None = None,
     ) -> tuple[ReviewedExample, ...]:
         """Page tenant-owned cases, including disabled cases, for governance."""
 

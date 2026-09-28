@@ -1,0 +1,38 @@
+services:
+  api:
+    environment:
+      INVOICE_INTELLIGENCE_AUTH_MODE: oidc
+      INVOICE_INTELLIGENCE_DEV_TENANT_ID: ""
+      INVOICE_INTELLIGENCE_OIDC_ISSUER: http://127.0.0.1:18080/realms/invoice-acceptance
+      INVOICE_INTELLIGENCE_OIDC_AUDIENCE: invoice-intelligence-api
+      INVOICE_INTELLIGENCE_OIDC_JWKS_URL: http://keycloak:8080/realms/invoice-acceptance/protocol/openid-connect/certs
+      INVOICE_INTELLIGENCE_OIDC_CLIENT_ID: invoice-intelligence-console
+      INVOICE_INTELLIGENCE_MILVUS_URI: http://milvus:19530
+    ports: !override ["127.0.0.1:18000:8000"]
+  extraction-worker:
+    environment:
+      INVOICE_INTELLIGENCE_MILVUS_URI: http://milvus:19530
+      INVOICE_INTELLIGENCE_OCR_BASE_URL: http://host.docker.internal:8077
+      INVOICE_INTELLIGENCE_EXAMPLE_RETRIEVAL_MAX_FIELDS: "19"
+  memory-admission:
+    environment:
+      INVOICE_INTELLIGENCE_MILVUS_URI: http://milvus:19530
+  index-rebuild:
+    environment:
+      INVOICE_INTELLIGENCE_MILVUS_URI: http://milvus:19530
+  keycloak:
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        export KC_DB_PASSWORD="$$(cat /run/secrets/postgres_auth_password)";
+        export KC_BOOTSTRAP_ADMIN_PASSWORD="$$(cat /run/secrets/keycloak_admin_password)";
+        exec /opt/keycloak/bin/kc.sh start --http-enabled=true --health-enabled=true --import-realm
+    environment:
+      KC_HOSTNAME: http://127.0.0.1:18080
+    ports: ["127.0.0.1:18080:8080"]
+    volumes:
+      - ./deploy/keycloak/invoice-acceptance-realm.json:/opt/keycloak/data/import/invoice-acceptance-realm.json:ro
+  object-storage:
+    ports: !override ["127.0.0.1:19000:9000", "127.0.0.1:19001:9001"]
+  reverse-proxy:
+    ports: !override ["127.0.0.1:18443:8443"]

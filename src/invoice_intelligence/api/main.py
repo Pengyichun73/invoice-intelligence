@@ -2,6 +2,7 @@
 
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
+from time import perf_counter
 from uuid import uuid4
 
 from fastapi import FastAPI, Request, Response
@@ -51,6 +52,7 @@ def create_app(
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
+        request.state.request_started_at = perf_counter()
         trusted = getattr(request.state, "trusted_tenant_context", None)
         trace_id = (
             trusted.trace_id

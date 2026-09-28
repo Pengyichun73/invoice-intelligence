@@ -1,3 +1,5 @@
+import { accessToken } from '../auth/session.js'
+
 const STATUS_MESSAGES = {
   400: '请求参数不符合接口要求',
   403: '无权限执行此操作，或二级审批人与原审核人冲突',
@@ -8,6 +10,8 @@ const STATUS_MESSAGES = {
   500: '服务内部错误，请使用 trace 信息排查',
   503: '服务暂时降级，请稍后重试',
 }
+
+export const DEFAULT_REQUEST_TIMEOUT_MS = 5000
 
 const RECOVERY_MESSAGES = {
   0: '请确认后端已启动并检查网络连接，然后重试。',
@@ -85,8 +89,9 @@ const DISPLAY_LABELS = {
   assessment_source: { deterministic: '确定性校验', model_advisory: '模型建议' },
   projection_status: { pending: '待处理', processing: '处理中', indexed: '已登记索引', failed: '投影失败', invalidated: '已失效' },
   evidence_source: { vision: '视觉识别', ocr: '文字识别', paddleocr: '本地文字识别', qwen: '云端视觉识别', combined: '多源结果' },
+  readability: { readable: '可读', partially_readable: '部分可读', unreadable: '不可读', missing: '缺失' },
   provider: { paddlex_http: '本地 PaddleX', paddleocr: '本地 PaddleOCR', qwen: '千问云端', openai: 'OpenAI 云端', vision: '视觉模型' },
-  document_type: { invoice: '发票', vat_invoice: '增值税发票', non_vat_invoice: '非增值税发票' },
+  document_type: { InvoiceExtraction: '发票', invoice: '发票', vat_invoice: '增值税发票', non_vat_invoice: '非增值税发票' },
   value_type: { string: '文本', str: '文本', decimal: '金额', date: '日期', datetime: '日期时间', boolean: '是/否', integer: '整数', number: '数值' },
   resource_type: { memory_admission: '记忆准入', field_alias: '字段别名', memory_conflict: '记忆冲突', reviewed_example: '审核案例', index_version: '索引版本', schema: 'Schema' },
 }
@@ -126,7 +131,9 @@ export class ApiError extends Error {
     this.payload = null
     this.fieldErrors = fieldErrors
     this.traceId = traceId
-    this.recovery = RECOVERY_MESSAGES[status] || '请检查输入后重试；若问题持续，请使用技术关联标识排查。'
+    this.recovery = code === 'request_timeout'
+      ? '服务响应较慢，请稍后重试。'
+      : RECOVERY_MESSAGES[status] || '请检查输入后重试；若问题持续，请使用技术关联标识排查。'
   }
 }
 
@@ -176,15 +183,53 @@ function queryString(params = {}) {
 }
 
 export async function apiRequest(path, options = {}) {
+  const {
+    timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+    signal: externalSignal,
+    ...fetchOptions
+  } = options
   publishRequestActivity(1)
+  const controller = new AbortController()
+  let timedOut = false
+  let removeAbortListener = null
+  const timeout = Number.isFinite(timeoutMs) && timeoutMs > 0
+    ? timeoutMs
+    : DEFAULT_REQUEST_TIMEOUT_MS
+  if (externalSignal) {
+    if (externalSignal.aborted) controller.abort(externalSignal.reason)
+    else {
+      const abort = () => controller.abort(externalSignal.reason)
+      externalSignal.addEventListener('abort', abort, { once: true })
+      removeAbortListener = () => externalSignal.removeEventListener('abort', abort)
+    }
+  }
+  const timer = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, timeout)
   try {
     let response
+    let token
     try {
-      response = await fetch(path, options)
+      const maybeToken = accessToken()
+      token = maybeToken ? await maybeToken : null
+      response = await fetch(path, {
+        ...fetchOptions,
+        headers: token
+          ? { ...fetchOptions.headers, Authorization: `Bearer ${token}` }
+          : fetchOptions.headers,
+        signal: controller.signal,
+      })
     } catch {
+      if (timedOut) {
+        throw new ApiError(0, 'request_timeout', '请求超时，请稍后重试', null, {})
+      }
       throw new ApiError(0, 'network_unavailable', '无法连接服务端', null, {})
     }
     const payload = await response.json().catch(() => null)
+    if (response.status === 401 && token && typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('invoice:auth-expired'))
+    }
     if (!response.ok) {
       const code = payload?.code || `http_${response.status}`
       const message = STATUS_MESSAGES[response.status] || '请求处理失败'
@@ -200,15 +245,20 @@ export async function apiRequest(path, options = {}) {
     }
     return payload
   } finally {
+    clearTimeout(timer)
+    removeAbortListener?.()
     publishRequestActivity(-1)
   }
 }
 
-export function get(path, params) {
-  return apiRequest(`${path}${queryString(params)}`)
+export function get(path, params, options = {}) {
+  return apiRequest(`${path}${queryString(params)}`, options)
 }
 
-export async function write(path, { method = 'POST', body, headers = {} } = {}) {
+export async function write(
+  path,
+  { method = 'POST', body, headers = {}, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, signal } = {},
+) {
   const fingerprint = await writeFingerprint(path, method, body)
   const idempotencyKey = cachedWriteKey(fingerprint)
   const requestHeaders = {
@@ -222,7 +272,7 @@ export async function write(path, { method = 'POST', body, headers = {} } = {}) 
     options.body = JSON.stringify(body)
   }
   try {
-    const result = await apiRequest(path, options)
+    const result = await apiRequest(path, { ...options, timeoutMs, signal })
     retryableWriteKeys.delete(fingerprint)
     return result
   } catch (error) {
@@ -246,8 +296,16 @@ export function fullText(value) {
 
 export function formatDate(value) {
   if (!value) return '未记录'
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) return `${value} 00:00:00`
   const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('zh-CN', { hour12: false })
+  if (Number.isNaN(date.getTime())) return String(value)
+  const two = (part) => String(part).padStart(2, '0')
+  return `${date.getFullYear()}-${two(date.getMonth() + 1)}-${two(date.getDate())} ${two(date.getHours())}:${two(date.getMinutes())}:${two(date.getSeconds())}`
+}
+
+export function formatFieldValue(fieldPath, value) {
+  if (value === null || value === undefined || value === '') return '未记录'
+  return ['invoice_date', 'bookkeeping_datetime'].includes(fieldPath) ? formatDate(value) : fullText(value)
 }
 
 export function formatScore(value) {

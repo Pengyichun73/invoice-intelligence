@@ -166,6 +166,7 @@ async def list_field_semantic_conflicts(
     ] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     cursor: Annotated[str | None, Query(min_length=1, max_length=64)] = None,
+    field_path: Annotated[str | None, Query(min_length=1, max_length=512)] = None,
 ) -> FieldSemanticConflictListResponse:
     return present_field_semantic_conflicts(
         await service.list_field_semantic_conflicts(
@@ -173,6 +174,7 @@ async def list_field_semantic_conflicts(
             statuses=tuple(conflict_statuses or (MemoryConflictStatus.OPEN,)),
             limit=limit,
             cursor=cursor,
+            field_path=field_path,
         )
     )
 

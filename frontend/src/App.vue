@@ -11,6 +11,8 @@ import {
   GitCompareArrows,
   Home,
   Menu,
+  LogIn,
+  LogOut,
   ScrollText,
   ShieldCheck,
   X,
@@ -27,6 +29,37 @@ import IndexGovernance from './views/IndexGovernance.vue'
 import MemoryAdmissions from './views/MemoryAdmissions.vue'
 import NotificationCenter from './components/NotificationCenter.vue'
 import RequestProgress from './components/RequestProgress.vue'
+import { loginEnabled, restoreSession, signIn, signOut } from './auth/session.js'
+
+const authRequired = loginEnabled()
+const identity = ref(null)
+const authLoading = ref(authRequired)
+const authError = ref('')
+
+async function loadIdentity() {
+  try {
+    const user = await restoreSession()
+    identity.value = user && !user.expired ? user : null
+    if (window.location.search.includes('code=')) {
+      window.history.replaceState(null, '', window.location.pathname + window.location.hash)
+    }
+  } catch {
+    authError.value = '登录未完成，请重试。'
+  } finally {
+    authLoading.value = false
+  }
+}
+
+async function beginSignIn() {
+  authError.value = ''
+  authLoading.value = true
+  try {
+    await signIn()
+  } catch {
+    authLoading.value = false
+    authError.value = '认证服务暂时不可用，请稍后重试。'
+  }
+}
 
 const groups = [
   {
@@ -133,6 +166,8 @@ function restoreFromHistory() {
 }
 
 onMounted(() => {
+  if (authRequired) loadIdentity()
+  window.addEventListener('invoice:auth-expired', handleAuthExpired)
   if (!viewKeys.has(hashView)) window.history.replaceState(null, '', `#${activeKey.value}`)
   window.addEventListener('popstate', restoreFromHistory)
   motionMediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
@@ -140,14 +175,30 @@ onMounted(() => {
   announceView()
 })
 onBeforeUnmount(() => {
+  window.removeEventListener('invoice:auth-expired', handleAuthExpired)
   window.removeEventListener('popstate', restoreFromHistory)
   motionMediaQuery?.removeEventListener?.('change', handleMotionPreference)
   document.body.classList.remove('drawer-open')
 })
+
+function handleAuthExpired() {
+  identity.value = null
+  authError.value = '会话已过期，请重新登录。'
+}
 </script>
 
 <template>
-  <div class="app-shell">
+  <main v-if="authRequired && !identity" class="auth-screen">
+    <div class="auth-panel">
+      <span class="brand-symbol"><FileText :size="24" /></span>
+      <h1>发票智能中枢</h1>
+      <p v-if="authLoading">正在确认身份…</p>
+      <p v-else-if="authError" role="alert">{{ authError }}</p>
+      <p v-else>请使用验收环境账号登录</p>
+      <button v-if="!authLoading" type="button" class="auth-command" @click="beginSignIn"><LogIn :size="18" />登录</button>
+    </div>
+  </main>
+  <div v-else class="app-shell">
     <RequestProgress />
     <header class="global-header">
       <button class="product-brand" aria-label="返回总览" @click="navigate('dashboard')">
@@ -168,8 +219,9 @@ onBeforeUnmount(() => {
 
       <div class="workspace-state">
         <i />
-        <span><strong>受控工作区</strong><small>身份由可信上下文确认</small></span>
+        <span><strong>{{ identity?.profile?.preferred_username || '受控工作区' }}</strong><small>身份由可信上下文确认</small></span>
       </div>
+      <button v-if="authRequired" class="icon-btn" title="退出登录" aria-label="退出登录" @click="signOut"><LogOut :size="18" /></button>
       <button ref="menuTriggerRef" class="icon-btn menu-trigger" title="打开全部功能" @click="mobileOpen = true">
         <Menu :size="20" />
       </button>

@@ -4,11 +4,13 @@ import json
 import logging
 import re
 import unicodedata
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import wraps
 from hashlib import sha256
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 from uuid import uuid4
 
 from invoice_intelligence.application.errors import (
@@ -103,6 +105,49 @@ from invoice_intelligence.domain.workflow import SignalVerdict
 
 _LOGGER = logging.getLogger(__name__)
 _EnumT = TypeVar("_EnumT")
+_Claim = tuple[str, str, str, str]
+_ACTIVE_CLAIM: ContextVar[_Claim | None] = ContextVar(
+    "memory_governance_active_claim",
+    default=None,
+)
+
+
+def _release_claim_on_exception(
+    method: Callable[..., Awaitable[Any]],
+) -> Callable[..., Awaitable[Any]]:
+    """Release only the claim created by this request when its operation fails."""
+
+    @wraps(method)
+    async def wrapped(
+        self: "MemoryGovernanceService",
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        token = _ACTIVE_CLAIM.set(None)
+        try:
+            return await method(self, *args, **kwargs)
+        except Exception:
+            claim = _ACTIVE_CLAIM.get()
+            if claim is not None:
+                operation, key, request_hash, resource_id = claim
+                try:
+                    await self._idempotency.release_idempotency(
+                        operation,
+                        key,
+                        request_hash,
+                        resource_id,
+                    )
+                except Exception as release_error:
+                    _LOGGER.warning(
+                        "memory_governance_idempotency_release_failed",
+                        extra={"error_type": type(release_error).__name__},
+                    )
+            raise
+        finally:
+            _ACTIVE_CLAIM.reset(token)
+
+    return cast(Callable[..., Awaitable[Any]], wrapped)
+
 _DATA_IMAGE_RE = re.compile(r"data\s*:\s*image\s*/", re.IGNORECASE)
 _BASE64_BLOCK_RE = re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{256,}={0,2}")
 _EMAIL_RE = re.compile(
@@ -472,6 +517,7 @@ class MemoryGovernanceService:
         is_valid: bool | None,
         limit: int,
         cursor: str | None,
+        run_id: str | None = None,
     ) -> MemoryExamplePage:
         self._require(context, MemoryPermission.READ)
         if not 1 <= limit <= 100:
@@ -481,6 +527,7 @@ class MemoryGovernanceService:
             schema_version,
         )
         field_path = self._normalize_optional_identifier("field_path", field_path)
+        run_id = self._normalize_optional_identifier("run_id", run_id)
         cursor = self._normalize_optional_identifier("cursor", cursor)
         items = await self._examples.list_for_governance(
             context.tenant_id,
@@ -490,6 +537,7 @@ class MemoryGovernanceService:
             is_valid=is_valid,
             limit=limit + 1,
             after_example_id=cursor,
+            **({"run_id": run_id} if run_id is not None else {}),
         )
         has_more = len(items) > limit
         page = items[:limit]
@@ -628,17 +676,23 @@ class MemoryGovernanceService:
         statuses: Sequence[MemoryAdmissionStatus],
         limit: int,
         cursor: str | None,
+        run_id: str | None = None,
+        field_path: str | None = None,
     ) -> MemoryAdmissionPage:
         self._require(context, MemoryPermission.GOVERN)
         if not 1 <= limit <= 100:
             raise BadRequestError("limit must be between 1 and 100")
         normalized_statuses = self._unique_values("admission status", statuses)
         cursor = self._normalize_optional_identifier("cursor", cursor)
+        run_id = self._normalize_optional_identifier("run_id", run_id)
+        field_path = self._normalize_optional_identifier("field_path", field_path)
         records = await self._admissions.list_by_status(
             context.tenant_id,
             normalized_statuses,
             limit=limit + 1,
             after_example_id=cursor,
+            run_id=run_id,
+            **({"field_path": field_path} if field_path is not None else {}),
         )
         has_more = len(records) > limit
         page = records[:limit]
@@ -958,17 +1012,20 @@ class MemoryGovernanceService:
         statuses: Sequence[MemoryConflictStatus],
         limit: int,
         cursor: str | None,
+        field_path: str | None = None,
     ) -> FieldSemanticConflictPage:
         self._require(context, MemoryPermission.GOVERN_FIELD_ALIAS)
         if not 1 <= limit <= 100:
             raise BadRequestError("limit must be between 1 and 100")
         cursor = self._normalize_optional_identifier("cursor", cursor)
+        field_path = self._normalize_optional_identifier("field_path", field_path)
         records = await self._conflicts.list_for_governance(
             context.tenant_id,
             self._unique_values("conflict status", statuses),
             alias_conflicts_only=True,
             limit=limit + 1,
             after_conflict_id=cursor,
+            **({"field_path": field_path} if field_path is not None else {}),
         )
         has_more = len(records) > limit
         page = records[:limit]
@@ -1379,6 +1436,7 @@ class MemoryGovernanceService:
             ),
         )
 
+    @_release_claim_on_exception
     async def disable_example(
         self,
         context: TrustedTenantContext,
@@ -1449,6 +1507,7 @@ class MemoryGovernanceService:
         await self._complete(operation, key, fingerprint, result)
         return result
 
+    @_release_claim_on_exception
     async def invalidate_schema(
         self,
         context: TrustedTenantContext,
@@ -1515,6 +1574,7 @@ class MemoryGovernanceService:
         await self._complete(operation, key, fingerprint, result)
         return result
 
+    @_release_claim_on_exception
     async def rebuild_index(
         self,
         context: TrustedTenantContext,
@@ -1684,6 +1744,7 @@ class MemoryGovernanceService:
         metrics = await self._telemetry.summarize(tenant_id, version.value)
         return MemoryIndexView(index=index, metrics=metrics, audit_event=audit_event)
 
+    @_release_claim_on_exception
     async def submit_feedback(
         self,
         context: TrustedTenantContext,
@@ -2053,6 +2114,11 @@ class MemoryGovernanceService:
                 raise IdempotencyInProgressError(
                     "An equivalent memory governance operation is already in progress"
                 )
+        if (
+            claim.status is IdempotencyStatus.IN_PROGRESS
+            and claim.resource_id == resource_id
+        ):
+            _ACTIVE_CLAIM.set((operation, key, fingerprint, resource_id))
         return key, fingerprint, operation
 
     async def _recover_governance_operation(

@@ -284,9 +284,14 @@ class Settings(BaseSettings):
         "invoice_intelligence"
     )
     business_database_password_file: Path | None = None
+    business_database_connect_timeout_seconds: float = Field(default=5.0, gt=0)
+    business_database_pool_timeout_seconds: float = Field(default=5.0, gt=0)
+    business_database_statement_timeout_seconds: float = Field(default=5.0, gt=0)
     checkpoint_backend: Literal["postgres", "sqlite"] = "sqlite"
+    extraction_async_enabled: bool = False
     sqlite_checkpoint_path: Path = Path(".data/checkpoints.sqlite")
     postgres_checkpoint_dsn: SecretStr | None = None
+    postgres_checkpoint_password_file: Path | None = None
     invoice_schema_version: str = "3.0.0"
     field_semantic_base_catalog_version: str = "field-semantics-base-v3"
     field_semantic_index_enabled: bool = False
@@ -343,13 +348,14 @@ class Settings(BaseSettings):
     field_alias_global_min_distinct_tenants: int = Field(default=3, ge=2)
     field_alias_global_hash_salt: SecretStr | None = None
     field_alias_global_hash_salt_version: str = "field-alias-global-salt-v1"
-    vision_prompt_version: str = "invoice-vision-extraction-v2"
+    vision_prompt_version: str = "invoice-vision-extraction-v3-value-blind"
     vision_prompt_max_examples_total: int = Field(default=12, gt=0, le=100)
     vision_prompt_max_examples_per_region: int = Field(default=6, gt=0, le=50)
     vision_prompt_max_correction_events: int = Field(default=6, gt=0, le=50)
     vision_prompt_max_catalog_definitions: int = Field(default=64, gt=0, le=500)
     vision_prompt_max_section_chars: int = Field(default=12_000, gt=0)
     vision_prompt_max_total_chars: int = Field(default=32_000, gt=0)
+    memory_targeted_reread_mode: Literal["off", "shadow", "apply"] = "off"
     memory_admission_policy_version: str = "memory-admission-v1"
     memory_conflict_resolution_policy_version: str = "memory-conflict-resolution-v1"
     memory_admission_reviewer_profile_version: str = "reviewer-reliability-v1"
@@ -480,7 +486,7 @@ class Settings(BaseSettings):
     example_retrieval_policy_version: str = "hybrid-retrieval-v1"
     example_retrieval_threshold_version: str = "hybrid-thresholds-v1"
     example_retrieval_feature_fingerprint_salt: SecretStr | None = None
-    example_retrieval_max_fields: int = Field(default=12, gt=0, le=200)
+    example_retrieval_max_fields: int = Field(default=19, gt=0, le=200)
     milvus_enabled: bool = False
     milvus_uri: str | None = None
     milvus_token: SecretStr | None = None
@@ -856,7 +862,9 @@ class Settings(BaseSettings):
             raise ValueError("business_database_url must use durable storage")
         return normalized
 
-    @field_validator("business_database_password_file", mode="before")
+    @field_validator(
+        "business_database_password_file", "postgres_checkpoint_password_file", mode="before"
+    )
     @classmethod
     def normalize_business_database_password_file(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
@@ -868,6 +876,16 @@ class Settings(BaseSettings):
         return _resolve_business_database_url(
             self.business_database_url,
             self.business_database_password_file,
+            self.environment,
+        )
+
+    @property
+    def resolved_postgres_checkpoint_dsn(self) -> SecretStr | None:
+        if self.postgres_checkpoint_dsn is None:
+            return None
+        return _resolve_business_database_url(
+            self.postgres_checkpoint_dsn,
+            self.postgres_checkpoint_password_file,
             self.environment,
         )
 
@@ -979,6 +997,17 @@ class Settings(BaseSettings):
         if self.vision_prompt_max_total_chars < self.vision_prompt_max_section_chars:
             raise ValueError(
                 "vision_prompt_max_total_chars must cover one Prompt section"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_memory_reread_rollout(self) -> "Settings":
+        if (
+            self.environment is Environment.PRODUCTION
+            and self.memory_targeted_reread_mode == "apply"
+        ):
+            raise ValueError(
+                "Production targeted reread apply mode requires a verified benefit gate"
             )
         return self
 
@@ -1331,6 +1360,16 @@ class Settings(BaseSettings):
                 raise ValueError("Production Milvus retrieval requires reranking")
         if self.checkpoint_backend == "postgres" and self.postgres_checkpoint_dsn is None:
             raise ValueError("postgres_checkpoint_dsn is required for PostgreSQL checkpoints")
+        if (
+            self.environment is Environment.PRODUCTION
+            and self.checkpoint_backend == "postgres"
+            and self.postgres_checkpoint_password_file is None
+        ):
+            raise ValueError("Production requires postgres_checkpoint_password_file")
+        if self.extraction_async_enabled and self.checkpoint_backend != "postgres":
+            raise ValueError("Async extraction requires a shared PostgreSQL checkpointer")
+        if self.extraction_async_enabled and not business_url.startswith("postgresql+psycopg://"):
+            raise ValueError("Async extraction requires PostgreSQL business storage")
         if self.checkpoint_backend == "sqlite":
             if business_url.startswith("sqlite+pysqlite:///"):
                 raw_path = business_url.removeprefix("sqlite+pysqlite:///")
@@ -1361,6 +1400,8 @@ class Settings(BaseSettings):
                     "PostgreSQL checkpoint storage must differ from the business database"
                 )
         self.resolved_business_database_url
+        if self.checkpoint_backend == "postgres":
+            self.resolved_postgres_checkpoint_dsn
         return self
 
 

@@ -70,11 +70,22 @@ class PromptContextBudget:
 
 
 @dataclass(frozen=True, slots=True)
+class FieldPatternHint:
+    """Value-free, approved case pattern used only to locate current evidence."""
+
+    example_id: str
+    field_path: str
+    label_type: str
+    index_version: str
+
+
+@dataclass(frozen=True, slots=True)
 class VisionPromptContext:
     """Historical Prompt inputs kept separate from current-image business data."""
 
     correction_events: tuple[CorrectionEvent, ...] = ()
     reviewed_examples: ReviewedExamplePromptContext | None = None
+    focus_field_paths: tuple[str, ...] = ()
     field_semantic_catalog: FieldSemanticPromptCatalog | None = None
     budget: PromptContextBudget = PromptContextBudget()
 

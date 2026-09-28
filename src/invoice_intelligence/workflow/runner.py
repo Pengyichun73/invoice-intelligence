@@ -67,6 +67,61 @@ class InvoiceWorkflowRunner:
             ),
         )
 
+    async def start_or_continue(
+        self,
+        identity: WorkflowIdentity,
+        document: DocumentReference,
+        tenant_id: str,
+        trace_id: str | None = None,
+    ) -> dict[str, Any]:
+        config = self._config(identity.thread_id)
+        snapshot = await self._graph.aget_state(config)
+        if not snapshot.values:
+            return await self.start(identity, document, tenant_id, trace_id)
+        values = cast(GraphState, snapshot.values)
+        self._ensure_identity(values, identity)
+        if values.get("status") in {
+            WorkflowStatus.PENDING_REVIEW.value,
+            WorkflowStatus.COMPLETED.value,
+            WorkflowStatus.FAILED.value,
+        }:
+            return cast(dict[str, Any], values)
+        return cast(dict[str, Any], await self._graph.ainvoke(None, config=config))
+
+    async def resume_or_continue(
+        self,
+        identity: WorkflowIdentity,
+        correction: HumanCorrection,
+        checkpoint_id: str,
+    ) -> dict[str, Any]:
+        config = self._config(identity.thread_id)
+        snapshot = await self._graph.aget_state(config)
+        values = cast(GraphState, snapshot.values)
+        self._ensure_identity(values, identity)
+        if values.get("status") in {WorkflowStatus.COMPLETED.value, WorkflowStatus.FAILED.value}:
+            return cast(dict[str, Any], values)
+        if snapshot.interrupts:
+            if self._checkpoint_id(snapshot.config) != checkpoint_id:
+                return cast(dict[str, Any], values)
+            return await self.resume(identity, correction)
+        return cast(dict[str, Any], await self._graph.ainvoke(None, config=config))
+
+    async def get_pending_checkpoint_id(self, identity: WorkflowIdentity) -> str:
+        snapshot = await self._graph.aget_state(self._config(identity.thread_id))
+        values = cast(GraphState, snapshot.values)
+        self._ensure_identity(values, identity)
+        if not snapshot.interrupts:
+            raise WorkflowIdentityError("Workflow is not waiting for human review")
+        checkpoint_id = self._checkpoint_id(snapshot.config)
+        if checkpoint_id is None:
+            raise WorkflowIdentityError("Pending review checkpoint has no identity")
+        return checkpoint_id
+
+    @staticmethod
+    def _checkpoint_id(config: RunnableConfig) -> str | None:
+        value = config.get("configurable", {}).get("checkpoint_id")
+        return value if isinstance(value, str) and value else None
+
     async def get_state(self, identity: WorkflowIdentity) -> dict[str, Any]:
         """Read one checkpoint state after validating all three identifiers."""
 
