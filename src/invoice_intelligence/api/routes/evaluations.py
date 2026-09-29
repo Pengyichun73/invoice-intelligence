@@ -11,6 +11,7 @@ from invoice_intelligence.api.dependencies import (
 from invoice_intelligence.api.schemas.common import STANDARD_ERROR_RESPONSES
 from invoice_intelligence.api.schemas.evaluations import (
     CreateEvaluationJobRequest,
+    CreateMemoryBenefitJobRequest,
     CreateScheduleRequest,
     CreateSnapshotRequest,
     CreateSuiteEvaluationJobRequest,
@@ -21,6 +22,7 @@ from invoice_intelligence.api.schemas.evaluations import (
 from invoice_intelligence.application.services.evaluation_jobs import (
     CreateEvaluationJobCommand,
     CreateEvaluationScheduleCommand,
+    CreateMemoryBenefitJobCommand,
     CreateSnapshotCommand,
     CreateSuiteEvaluationJobCommand,
 )
@@ -131,6 +133,22 @@ async def create_suite_job(
 ) -> EvaluationJobResponse:
     return _job(await service.create_suite_job(
         context, CreateSuiteEvaluationJobCommand(**request.model_dump()),
+        idempotency_key=idempotency_key,
+    ))
+
+
+@router.post(
+    "/memory-benefit-jobs", response_model=EvaluationJobResponse,
+    responses=STANDARD_ERROR_RESPONSES,
+)
+async def create_memory_benefit_job(
+    request: CreateMemoryBenefitJobRequest,
+    service: EvaluationJobServiceDependency,
+    context: TrustedTenantContextDependency,
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=1, max_length=200)],
+) -> EvaluationJobResponse:
+    return _job(await service.create_memory_benefit_job(
+        context, CreateMemoryBenefitJobCommand(document_ids=request.document_ids),
         idempotency_key=idempotency_key,
     ))
 

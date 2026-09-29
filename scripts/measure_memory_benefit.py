@@ -5,8 +5,10 @@ import json
 from collections import defaultdict
 from pathlib import Path
 
+from invoice_intelligence.application.services.memory_benefit_summary import (
+    summarize_paired_judgments,
+)
 from invoice_intelligence.domain.invoice import InvoiceExtraction
-
 
 VARIANTS = ("vision", "vision_ocr", "vision_ocr_memory")
 FIELD_PATHS = frozenset(InvoiceExtraction.model_fields)
@@ -61,47 +63,26 @@ def _read_manifest(path: Path) -> dict[str, dict[str, dict[str, object]]]:
 
 def measure(path: Path) -> dict[str, object]:
     cases = _read_manifest(path)
+    rows = [row for variants in cases.values() for row in variants.values()]
+    summary = summarize_paired_judgments(rows)
     totals = {
         variant: {"review_fields": 0, "correct_fields": 0, "wrong_auto_passes": 0}
         for variant in VARIANTS
     }
-    template_groups: set[str] = set()
-    for variants in cases.values():
-        if set(variants) != set(VARIANTS):
-            raise ValueError("Every case requires all three variants")
-        reference = variants["vision"]
-        template_groups.add(str(reference["template_group"]))
-        for variant, row in variants.items():
-            for key in ("document_checksum", "template_group", *VERSION_KEYS):
-                if row[key] != reference[key]:
-                    raise ValueError(f"Paired variants disagree on {key}")
-            for judgment in row["fields"].values():
-                totals[variant]["review_fields"] += int(judgment["review_required"])
-                totals[variant]["correct_fields"] += int(judgment["correct"])
-                totals[variant]["wrong_auto_passes"] += int(
-                    judgment["auto_accepted"] and not judgment["correct"]
-                )
-    ocr_reviews = totals["vision_ocr"]["review_fields"]
-    memory_reviews = totals["vision_ocr_memory"]["review_fields"]
-    reduction = (
-        (ocr_reviews - memory_reviews) / ocr_reviews if ocr_reviews else 0.0
-    )
-    enough_coverage = len(cases) >= 20 and len(template_groups) >= 3
-    passed = (
-        enough_coverage
-        and ocr_reviews > 0
-        and reduction >= 0.20
-        and totals["vision_ocr_memory"]["wrong_auto_passes"] == 0
-        and totals["vision_ocr_memory"]["correct_fields"]
-        >= totals["vision_ocr"]["correct_fields"]
-    )
+    for row in rows:
+        variant = row["variant"]
+        for judgment in row["fields"].values():
+            totals[variant]["review_fields"] += int(judgment["review_required"])
+            totals[variant]["correct_fields"] += int(judgment["correct"])
+            totals[variant]["wrong_auto_passes"] += int(
+                judgment["auto_accepted"] and not judgment["correct"]
+            )
     return {
         "contract_version": "memory-benefit-gate-v1",
-        "case_count": len(cases),
-        "template_group_count": len(template_groups),
-        "review_reduction_vs_ocr": round(reduction, 6),
-        "coverage_sufficient": enough_coverage,
-        "passed": passed,
+        "case_count": summary["case_count"],
+        "template_group_count": summary["template_group_count"],
+        **summary["metrics"],
+        "blocker_codes": summary["blocker_codes"],
         "variants": totals,
     }
 

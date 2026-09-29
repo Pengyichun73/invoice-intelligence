@@ -108,6 +108,61 @@ class DocumentRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class InvoiceBatchRow(Base):
+    __tablename__ = "invoice_batches"
+    batch_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    created_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    idempotency_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    __table_args__ = (UniqueConstraint("tenant_id", "idempotency_hash", name="uq_invoice_batch_key"),)
+
+
+class InvoiceBatchFileRow(Base):
+    __tablename__ = "invoice_batch_files"
+    file_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    batch_id: Mapped[str] = mapped_column(String(64), ForeignKey("invoice_batches.batch_id", ondelete="RESTRICT"), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    document_id: Mapped[str] = mapped_column(String(36), ForeignKey("documents.document_id", ondelete="RESTRICT"), nullable=False)
+    ordinal: Mapped[int] = mapped_column(Integer(), nullable=False)
+    filename: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer(), nullable=False, default=1)
+    page_count: Mapped[int | None] = mapped_column(Integer(), nullable=True)
+    groups_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer(), nullable=False, default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    __table_args__ = (
+        UniqueConstraint("batch_id", "ordinal", name="uq_invoice_batch_file_ordinal"),
+        UniqueConstraint("batch_id", "document_id", name="uq_invoice_batch_file_document"),
+    )
+
+
+class InvoiceBatchItemRow(Base):
+    __tablename__ = "invoice_batch_items"
+    item_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    batch_id: Mapped[str] = mapped_column(String(64), ForeignKey("invoice_batches.batch_id", ondelete="RESTRICT"), nullable=False, index=True)
+    file_id: Mapped[str] = mapped_column(String(64), ForeignKey("invoice_batch_files.file_id", ondelete="RESTRICT"), nullable=False)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    ordinal: Mapped[int] = mapped_column(Integer(), nullable=False)
+    regions_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+    derived_pages_json: Mapped[list[dict[str, int]] | None] = mapped_column(JSON, nullable=True)
+    document_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("documents.document_id", ondelete="RESTRICT"), nullable=True)
+    run_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("extraction_runs.run_id", ondelete="RESTRICT"), nullable=True)
+    run_attempt: Mapped[int] = mapped_column(Integer(), nullable=False, default=1)
+    retry_key_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    __table_args__ = (UniqueConstraint("batch_id", "ordinal", name="uq_invoice_batch_item_ordinal"),)
+
+
 class StoredObjectRow(Base):
     __tablename__ = "stored_objects"
     __table_args__ = (
@@ -149,6 +204,7 @@ class ExtractionRunRow(Base):
 
     run_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    created_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     thread_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     document_id: Mapped[str] = mapped_column(
         String(36),
@@ -2836,6 +2892,120 @@ class RetrievalTraceRow(Base):
     )
 
 
+class MemoryBenefitRunRow(Base):
+    __tablename__ = "memory_benefit_runs"
+
+    run_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    dataset_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    catalog_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    index_version: Mapped[str] = mapped_column(String(256), nullable=False)
+    model_version: Mapped[str] = mapped_column(String(256), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(256), nullable=False)
+    case_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    template_group_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    metrics_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    scenarios_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+    blocker_codes_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'running', 'completed', 'failed')",
+            name="ck_memory_benefit_runs_status",
+        ),
+        CheckConstraint(
+            "case_count >= 0 AND template_group_count >= 0",
+            name="ck_memory_benefit_runs_counts",
+        ),
+        Index("ix_memory_benefit_runs_tenant_created", "tenant_id", "created_at"),
+    )
+
+
+class MemoryGoldCaseRow(Base):
+    __tablename__ = "memory_gold_cases"
+
+    document_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("documents.document_id", ondelete="RESTRICT"), primary_key=True
+    )
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    document_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    template_group: Mapped[str] = mapped_column(String(128), nullable=False)
+    versions_json: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    gold_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    gold_checksum: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    adjudicator_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    field_choices_json: Mapped[dict[str, str] | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    frozen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('open', 'frozen')", name="ck_memory_gold_case_status"),
+        CheckConstraint(
+            "(status = 'open' AND gold_ref IS NULL AND gold_checksum IS NULL "
+            "AND adjudicator_id IS NULL AND field_choices_json IS NULL AND frozen_at IS NULL) "
+            "OR (status = 'frozen' AND gold_ref IS NOT NULL AND gold_checksum IS NOT NULL "
+            "AND adjudicator_id IS NOT NULL AND field_choices_json IS NOT NULL "
+            "AND frozen_at IS NOT NULL)",
+            name="ck_memory_gold_case_freeze",
+        ),
+    )
+
+
+class MemoryBenefitJudgmentRow(Base):
+    __tablename__ = "memory_benefit_judgments"
+
+    judgment_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    run_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("memory_benefit_runs.run_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    case_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    variant: Mapped[str] = mapped_column(String(32), nullable=False)
+    document_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    template_group: Mapped[str] = mapped_column(String(128), nullable=False)
+    elapsed_ms: Mapped[float] = mapped_column(Float, nullable=False)
+    fields_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "case_id", "variant", name="uq_memory_benefit_judgment"),
+        CheckConstraint(
+            "variant IN ('vision', 'vision_ocr', 'vision_ocr_memory')",
+            name="ck_memory_benefit_judgment_variant",
+        ),
+        CheckConstraint("elapsed_ms >= 0", name="ck_memory_benefit_judgment_elapsed"),
+    )
+
+
+class MemoryGoldAnnotationRow(Base):
+    __tablename__ = "memory_gold_annotations"
+
+    annotation_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    document_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("memory_gold_cases.document_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    slot: Mapped[str] = mapped_column(String(8), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    object_ref: Mapped[str] = mapped_column(Text, nullable=False)
+    checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "document_id", "slot", name="uq_memory_gold_slot"),
+        UniqueConstraint("tenant_id", "document_id", "actor_id", name="uq_memory_gold_actor"),
+        CheckConstraint("slot IN ('first', 'second')", name="ck_memory_gold_slot"),
+    )
+
+
 class MemoryRetrievalFeedbackRow(Base):
     __tablename__ = "memory_retrieval_feedback"
 
@@ -3329,12 +3499,15 @@ class EvaluationJobRow(Base):
             "(evidence_class = 'suite_run' AND snapshot_id IS NULL "
             "AND dataset_key IS NOT NULL AND dataset_id IS NOT NULL AND suite IN "
             "('case_rag', 'trusted_memory_field_binding') "
-            "AND retrieval_policy_version IS NOT NULL)",
+            "AND retrieval_policy_version IS NOT NULL)"
+            " OR (evidence_class = 'memory_benefit' AND snapshot_id IS NULL "
+            "AND dataset_key IS NULL AND dataset_id IS NOT NULL AND suite IS NULL "
+            "AND catalog_version IS NOT NULL AND retrieval_policy_version IS NULL)",
             name="ck_evaluation_job_evidence_binding",
         ),
         CheckConstraint(
             "(evidence_class = 'diagnostic_only' AND evaluation_run_id IS NULL) OR "
-            "(evidence_class = 'suite_run' AND "
+            "(evidence_class IN ('suite_run', 'memory_benefit') AND "
             "((status = 'completed' AND evaluation_run_id IS NOT NULL) OR "
             "(status <> 'completed' AND evaluation_run_id IS NULL)))",
             name="ck_evaluation_job_run_link",
@@ -3350,6 +3523,26 @@ class EvaluationJobRow(Base):
             "AND lease_expires_at IS NULL)", name="ck_evaluation_job_lease",
         ),
         Index("ix_evaluation_jobs_queue", "status", "next_attempt_at", "lease_expires_at"),
+    )
+
+
+class MemoryBenefitJobCaseRow(Base):
+    __tablename__ = "memory_benefit_job_cases"
+
+    job_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("evaluation_jobs.job_id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    document_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("documents.document_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint("job_id", "document_id", name="uq_memory_benefit_job_document"),
+        CheckConstraint("ordinal >= 0", name="ck_memory_benefit_job_ordinal"),
     )
 
 

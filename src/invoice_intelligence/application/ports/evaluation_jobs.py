@@ -16,6 +16,16 @@ class EvaluationJobRepository(Protocol):
     async def create_job(
         self, job: EvaluationJob, request_sha256: str, idempotency_key_hash: str | None,
     ) -> EvaluationJob: ...
+    async def create_memory_benefit_job(
+        self, job: EvaluationJob, request_sha256: str,
+        idempotency_key_hash: str, document_ids: tuple[str, ...],
+    ) -> EvaluationJob: ...
+    async def get_memory_benefit_documents(
+        self, tenant_id: str, job_id: str
+    ) -> tuple[str, ...]: ...
+    async def complete_memory_benefit(
+        self, job: EvaluationJob, benefit_run_id: str
+    ) -> None: ...
     async def get_job(self, tenant_id: str, job_id: str) -> EvaluationJob | None: ...
     async def list_jobs(
         self, tenant_id: str, limit: int, offset: int,

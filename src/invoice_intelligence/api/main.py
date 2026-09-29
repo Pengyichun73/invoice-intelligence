@@ -11,10 +11,15 @@ from invoice_intelligence.api.dependencies import ApiDependencies
 from invoice_intelligence.api.errors import install_exception_handlers
 from invoice_intelligence.api.routes.accounting import router as accounting_router
 from invoice_intelligence.api.routes.documents import router as documents_router
+from invoice_intelligence.api.routes.invoice_batches import router as invoice_batches_router
 from invoice_intelligence.api.routes.evaluations import router as evaluations_router
 from invoice_intelligence.api.routes.field_semantics import router as field_semantics_router
 from invoice_intelligence.api.routes.health import router as health_router
 from invoice_intelligence.api.routes.memory import router as memory_router
+from invoice_intelligence.api.routes.memory_effectiveness import (
+    router as memory_effectiveness_router,
+)
+from invoice_intelligence.api.routes.memory_gold import router as memory_gold_router
 from invoice_intelligence.api.routes.promotion import router as promotion_router
 from invoice_intelligence.api.routes.reviews import router as reviews_router
 from invoice_intelligence.api.routes.runs import router as runs_router
@@ -97,9 +102,12 @@ def create_app(
     install_exception_handlers(app)
     app.include_router(health_router, prefix=settings.api_prefix)
     app.include_router(documents_router, prefix=settings.api_prefix)
+    app.include_router(invoice_batches_router, prefix=settings.api_prefix)
     app.include_router(runs_router, prefix=settings.api_prefix)
     app.include_router(reviews_router, prefix=settings.api_prefix)
     app.include_router(memory_router, prefix=settings.api_prefix)
+    app.include_router(memory_effectiveness_router, prefix=settings.api_prefix)
+    app.include_router(memory_gold_router, prefix=settings.api_prefix)
     app.include_router(field_semantics_router, prefix=settings.api_prefix)
     app.include_router(transactions_router, prefix=settings.api_prefix)
     app.include_router(accounting_router, prefix=settings.api_prefix)

@@ -113,5 +113,6 @@ async def extract_document(
             context.tenant_id,
             trace_id=context.trace_id,
             idempotency_key=idempotency_key,
+            actor_id=context.actor_id,
         )
     )

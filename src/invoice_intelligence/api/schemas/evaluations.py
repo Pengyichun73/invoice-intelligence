@@ -65,10 +65,15 @@ class CreateSuiteEvaluationJobRequest(BaseModel):
     field_binding_policy_version: str | None = Field(default=None, max_length=128)
 
 
+class CreateMemoryBenefitJobRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    document_ids: tuple[str, ...] = Field(min_length=1, max_length=200)
+
+
 class EvaluationJobResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
     job_id: str
-    evidence_class: Literal["diagnostic_only", "suite_run"] = "diagnostic_only"
+    evidence_class: Literal["diagnostic_only", "suite_run", "memory_benefit"] = "diagnostic_only"
     snapshot_id: str | None
     dataset_id: str | None = None
     suite: EvaluationSuite | None = None

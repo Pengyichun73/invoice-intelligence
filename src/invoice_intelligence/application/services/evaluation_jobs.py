@@ -10,12 +10,18 @@ from uuid import uuid4
 
 from invoice_intelligence.application.errors import (
     BadRequestError,
+    ForbiddenError,
     ResourceConflictError,
     ResourceNotFoundError,
     ServiceUnavailableError,
 )
 from invoice_intelligence.application.ports.evaluation import EvaluationDatasetRepository
 from invoice_intelligence.application.ports.evaluation_jobs import EvaluationJobRepository
+from invoice_intelligence.application.ports.memory_gold import GoldAnnotationRepository
+from invoice_intelligence.application.services.memory_benefit_batch import (
+    MemoryBenefitBatchService,
+    frozen_dataset_digest,
+)
 from invoice_intelligence.application.services.offline_evaluation import (
     OfflineEvaluationRequest,
     OfflineEvaluationService,
@@ -40,7 +46,7 @@ from invoice_intelligence.domain.examples import (
     PromptVersion,
     RetrievalPolicyVersion,
 )
-from invoice_intelligence.domain.governance import TrustedTenantContext
+from invoice_intelligence.domain.governance import MemoryPermission, TrustedTenantContext
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +83,11 @@ class CreateSuiteEvaluationJobCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class CreateMemoryBenefitJobCommand:
+    document_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class CreateEvaluationScheduleCommand:
     snapshot_id: str
     index_version: str
@@ -93,6 +104,9 @@ class EvaluationJobService:
         *,
         dataset_repository: EvaluationDatasetRepository | None = None,
         suite_evaluation: OfflineEvaluationService | None = None,
+        gold_repository: GoldAnnotationRepository | None = None,
+        memory_benefit_batch: MemoryBenefitBatchService | None = None,
+        memory_benefit_threshold_version: str = "memory-benefit-gate-v1",
         suite_run_timeout_seconds: float = 3600,
         max_attempts: int = 3,
     ) -> None:
@@ -101,6 +115,9 @@ class EvaluationJobService:
         self._repository = repository
         self._datasets = dataset_repository
         self._suite_evaluation = suite_evaluation
+        self._gold_repository = gold_repository
+        self._memory_benefit_batch = memory_benefit_batch
+        self._memory_benefit_threshold_version = memory_benefit_threshold_version
         self._suite_run_timeout_seconds = suite_run_timeout_seconds
         self._max_attempts = max_attempts
 
@@ -241,6 +258,57 @@ class EvaluationJobService:
         key_hash = sha256(idempotency_key.encode()).hexdigest()
         return await self._repository.create_job(job, request_hash, key_hash)
 
+    async def create_memory_benefit_job(
+        self, context: TrustedTenantContext, command: CreateMemoryBenefitJobCommand,
+        *, idempotency_key: str,
+    ) -> EvaluationJob:
+        if not context.permits(MemoryPermission.READ_EVALUATION):
+            raise ForbiddenError("Evaluation permission is required")
+        if self._gold_repository is None or self._memory_benefit_batch is None:
+            raise ServiceUnavailableError("Paired gold evaluation is unavailable")
+        if not command.document_ids or len(command.document_ids) > 200 or (
+            len(command.document_ids) != len(set(command.document_ids))
+        ):
+            raise BadRequestError("Benefit Job requires 1 to 200 distinct documents")
+        cases = []
+        for document_id in command.document_ids:
+            case = await self._gold_repository.get_case(context.tenant_id, document_id)
+            if case is None:
+                raise ResourceNotFoundError("Frozen gold case was not found")
+            if case.status != "frozen" or not case.gold_checksum:
+                raise ResourceConflictError("Gold case is not frozen")
+            cases.append(case)
+        if len({case.document_checksum for case in cases}) != len(cases):
+            raise ResourceConflictError("Benefit dataset repeats source bytes")
+        versions = cases[0].versions
+        if any(case.versions != versions for case in cases):
+            raise ResourceConflictError("Benefit dataset has mixed runtime versions")
+        digest = frozen_dataset_digest(cases)
+        now = datetime.now(UTC)
+        job = EvaluationJob(
+            job_id=uuid4().hex, tenant_id=context.tenant_id,
+            snapshot_id=None, dataset_id=f"gold-{digest}",
+            dataset_version=digest,
+            schema_version=versions["schema_version"],
+            index_version=versions["index_version"],
+            model_version=versions["model_version"],
+            prompt_version=versions["prompt_version"],
+            catalog_version=versions["catalog_version"],
+            threshold_version=self._memory_benefit_threshold_version,
+            status=EvaluationJobStatus.PENDING, attempt_count=0,
+            next_attempt_at=None, lease_expires_at=None, worker_id=None,
+            lease_token=None, failure_code=None, report=None,
+            created_at=now, updated_at=now,
+            evidence_class="memory_benefit",
+        )
+        request_hash = sha256(_canonical({
+            "document_ids": sorted(command.document_ids), "dataset_digest": digest,
+        }).encode()).hexdigest()
+        return await self._repository.create_memory_benefit_job(
+            job, request_hash, sha256(idempotency_key.encode()).hexdigest(),
+            command.document_ids,
+        )
+
     async def list_jobs(self, context: TrustedTenantContext, *, limit: int, offset: int) -> tuple[EvaluationJob, ...]:
         return await self._repository.list_jobs(context.tenant_id, limit, offset)
 
@@ -282,6 +350,9 @@ class EvaluationJobService:
             return None
         if job.evidence_class == "suite_run":
             await self._execute_suite_job(job, lease_seconds)
+            return job
+        if job.evidence_class == "memory_benefit":
+            await self._execute_memory_benefit_job(job, lease_seconds)
             return job
         try:
             if job.snapshot_id is None:
@@ -347,6 +418,53 @@ class EvaluationJobService:
             await self._fail_suite_if_owned(job, "evaluation.runner_timeout", retry=True)
         except Exception:
             await self._fail_suite_if_owned(job, "evaluation.runner_failure", retry=True)
+
+    async def _execute_memory_benefit_job(
+        self, job: EvaluationJob, lease_seconds: float
+    ) -> None:
+        if self._memory_benefit_batch is None:
+            await self._fail_suite_if_owned(job, "evaluation.gold_unavailable", retry=False)
+            return
+        try:
+            document_ids = await self._repository.get_memory_benefit_documents(
+                job.tenant_id, job.job_id
+            )
+            if not document_ids:
+                raise ValueError("Benefit Job has no frozen source documents")
+            stop = asyncio.Event()
+            renewal = asyncio.create_task(self._renew_suite_lease(job, lease_seconds, stop))
+            evaluation = asyncio.create_task(asyncio.wait_for(
+                self._memory_benefit_batch.run(
+                    job.tenant_id, job.job_id, document_ids, job.dataset_version
+                ), timeout=self._suite_run_timeout_seconds,
+            ))
+            try:
+                done, _ = await asyncio.wait(
+                    {evaluation, renewal}, return_when=asyncio.FIRST_COMPLETED
+                )
+                if renewal in done:
+                    evaluation.cancel()
+                    await asyncio.gather(evaluation, return_exceptions=True)
+                    raise ResourceConflictError("Benefit Job lease was lost")
+                result = await evaluation
+            finally:
+                if not evaluation.done():
+                    evaluation.cancel()
+                    await asyncio.gather(evaluation, return_exceptions=True)
+                stop.set()
+                if renewal.done():
+                    renewal.result()
+                else:
+                    await renewal
+            await self._repository.complete_memory_benefit(job, result.run_id)
+        except ResourceConflictError:
+            await self._fail_suite_if_owned(job, "evaluation.benefit_conflict", retry=False)
+        except (ValueError, TypeError, ResourceNotFoundError):
+            await self._fail_suite_if_owned(job, "evaluation.invalid_gold", retry=False)
+        except TimeoutError:
+            await self._fail_suite_if_owned(job, "evaluation.benefit_timeout", retry=True)
+        except Exception:
+            await self._fail_suite_if_owned(job, "evaluation.benefit_provider_failure", retry=True)
 
     async def _evaluate_with_lease(
         self,

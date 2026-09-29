@@ -5,6 +5,7 @@ import math
 import warnings
 from io import BytesIO
 from pathlib import Path
+from time import monotonic
 
 import pymupdf
 from PIL import Image, ImageEnhance, ImageOps, UnidentifiedImageError
@@ -22,6 +23,8 @@ from invoice_intelligence.domain.document import (
     UploadDocument,
     VisionImage,
 )
+from invoice_intelligence.domain.invoice_batch import CroppedInvoice, InvoiceRegion
+from invoice_intelligence.infrastructure.documents.quality import PillowImageQualityAnalyzer
 
 _SUPPORTED_MIME_TYPES = frozenset(
     {"application/pdf", "image/jpeg", "image/png", "image/webp"}
@@ -70,6 +73,178 @@ class PillowMuPdfDocumentProcessor:
             inspected,
             limits,
         )
+
+    async def crop_invoice(
+        self, images: tuple[VisionImage, ...], regions: tuple[InvoiceRegion, ...],
+    ) -> tuple[bytes, str, str]:
+        return await asyncio.to_thread(self._crop_invoice_sync, images, regions)
+
+    async def crop_invoice_from_source(
+        self, content: bytes, inspected: InspectedDocument,
+        regions: tuple[InvoiceRegion, ...], limits: DocumentProcessingLimits,
+        min_width: int, min_height: int, min_clarity: float,
+    ) -> CroppedInvoice:
+        return await asyncio.to_thread(
+            self._crop_invoice_from_source_sync, content, inspected, regions,
+            limits, min_width, min_height, min_clarity,
+        )
+
+    @staticmethod
+    def _crop_invoice_from_source_sync(
+        content: bytes, inspected: InspectedDocument,
+        regions: tuple[InvoiceRegion, ...], limits: DocumentProcessingLimits,
+        min_width: int, min_height: int, min_clarity: float,
+    ) -> CroppedInvoice:
+        crops: list[Image.Image] = []
+        sizes: list[tuple[int, int]] = []
+        attempts: list[int] = []
+        clarity_scores: list[float] = []
+        total_pixels = 0
+        if inspected.mime_type == "application/pdf":
+            with pymupdf.open(stream=content, filetype="pdf") as document:
+                for region in regions:
+                    page = document.load_page(region.page_number - 1)
+                    rect = page.rect
+                    clip = pymupdf.Rect(
+                        rect.x0 + region.left * rect.width,
+                        rect.y0 + region.top * rect.height,
+                        rect.x0 + region.right * rect.width,
+                        rect.y0 + region.bottom * rect.height,
+                    )
+                    crop, used, spent, clarity = PillowMuPdfDocumentProcessor._render_invoice_clip(
+                        page, clip, limits, min_width, min_height, min_clarity,
+                        limits.max_total_rendered_pixels - total_pixels,
+                    )
+                    total_pixels += spent
+                    crops.append(crop)
+                    sizes.append(crop.size)
+                    attempts.append(used)
+                    clarity_scores.append(clarity)
+        else:
+            with Image.open(BytesIO(content)) as source:
+                original = ImageOps.exif_transpose(source)
+                original.load()
+                for region in regions:
+                    left = min(original.width - 1, round(region.left * original.width))
+                    top = min(original.height - 1, round(region.top * original.height))
+                    box = (
+                        left, top,
+                        max(left + 1, round(region.right * original.width)),
+                        max(top + 1, round(region.bottom * original.height)),
+                    )
+                    crop = original.crop(box).convert("RGB")
+                    sizes.append(crop.size)
+                    crop.thumbnail(
+                        (limits.max_image_dimension, limits.max_image_dimension),
+                        Image.Resampling.LANCZOS,
+                    )
+                    crops.append(crop)
+                    attempts.append(1)
+                    buffer = BytesIO()
+                    crop.save(buffer, format="PNG")
+                    clarity_scores.append(PillowImageQualityAnalyzer._analyze_sync((
+                        VisionImage(buffer.getvalue(), "image/png", 1, crop.width, crop.height),
+                    ))[0].clarity_score)
+        if not crops:
+            raise InvalidDocumentError("Invoice has no source regions")
+        output = BytesIO()
+        if len(crops) == 1:
+            crops[0].save(output, format="PNG", optimize=True)
+            if output.tell() <= limits.max_upload_bytes:
+                return CroppedInvoice(
+                    output.getvalue(), "image/png", "invoice.png",
+                    tuple(sizes), tuple(attempts), tuple(clarity_scores),
+                )
+            output = BytesIO()
+            crops[0].save(output, format="JPEG", quality=95)
+            if output.tell() > limits.max_upload_bytes:
+                output = BytesIO()
+                crops[0].save(output, format="JPEG", quality=90)
+            return CroppedInvoice(
+                output.getvalue(), "image/jpeg", "invoice.jpg",
+                tuple(sizes), tuple(attempts), tuple(clarity_scores),
+            )
+        crops[0].save(
+            output, format="PDF", save_all=True, append_images=crops[1:],
+            resolution=300 if 2 in attempts else min(limits.pdf_render_dpi, 300),
+        )
+        return CroppedInvoice(
+            output.getvalue(), "application/pdf", "invoice.pdf",
+            tuple(sizes), tuple(attempts), tuple(clarity_scores),
+        )
+
+    @staticmethod
+    def _render_invoice_clip(
+        page: pymupdf.Page, clip: pymupdf.Rect, limits: DocumentProcessingLimits,
+        min_width: int, min_height: int, min_clarity: float, remaining_pixels: int,
+    ) -> tuple[Image.Image, int, int, float]:
+        spent = 0
+        chosen: Image.Image | None = None
+        used = 0
+        clarity = 0.0
+        started = monotonic()
+        base_dpi = min(limits.pdf_render_dpi, 300)
+        for attempt, dpi in enumerate((base_dpi, 300), 1):
+            if attempt == 2 and (dpi <= base_dpi or monotonic() - started > 10):
+                break
+            scale = min(
+                dpi / 72.0,
+                limits.max_image_dimension / clip.width,
+                limits.max_image_dimension / clip.height,
+                math.sqrt(limits.max_image_pixels / (clip.width * clip.height)),
+            ) * 0.999
+            width = max(1, math.ceil(clip.width * scale))
+            height = max(1, math.ceil(clip.height * scale))
+            if spent + width * height > remaining_pixels:
+                if chosen is not None:
+                    break
+                raise InvalidDocumentError("Invoice clips exceed cumulative render pixel limit")
+            pixmap = page.get_pixmap(
+                matrix=pymupdf.Matrix(scale, scale), clip=clip,
+                colorspace=pymupdf.csRGB, alpha=False,
+            )
+            if (pixmap.width > limits.max_image_dimension
+                    or pixmap.height > limits.max_image_dimension
+                    or pixmap.width * pixmap.height > limits.max_image_pixels
+                    or spent + pixmap.width * pixmap.height > remaining_pixels):
+                raise InvalidDocumentError("Invoice clip exceeds render pixel limits")
+            spent += pixmap.width * pixmap.height
+            used = attempt
+            chosen = Image.open(BytesIO(pixmap.tobytes("png"))).convert("RGB")
+            buffer = BytesIO()
+            chosen.save(buffer, format="PNG")
+            quality = PillowImageQualityAnalyzer._analyze_sync((
+                VisionImage(buffer.getvalue(), "image/png", 1, chosen.width, chosen.height),
+            ))[0]
+            clarity = quality.clarity_score
+            if (quality.width >= min_width and quality.height >= min_height
+                    and quality.clarity_score >= min_clarity):
+                return chosen, attempt, spent, clarity
+        if chosen is None:
+            raise InvalidDocumentError("Invoice clip could not be rendered")
+        return chosen, used, spent, clarity
+
+    @staticmethod
+    def _crop_invoice_sync(
+        images: tuple[VisionImage, ...], regions: tuple[InvoiceRegion, ...],
+    ) -> tuple[bytes, str, str]:
+        crops: list[Image.Image] = []
+        for region in regions:
+            source = images[region.page_number - 1]
+            with Image.open(BytesIO(source.content)) as image:
+                box = (
+                    round(region.left * image.width), round(region.top * image.height),
+                    round(region.right * image.width), round(region.bottom * image.height),
+                )
+                if box[2] - box[0] < 32 or box[3] - box[1] < 32:
+                    raise ValueError("Invoice region is too small to extract")
+                crops.append(image.crop(box).convert("RGB"))
+        output = BytesIO()
+        if len(crops) == 1:
+            crops[0].save(output, format="PNG")
+            return output.getvalue(), "image/png", "invoice.png"
+        crops[0].save(output, format="PDF", save_all=True, append_images=crops[1:])
+        return output.getvalue(), "application/pdf", "invoice.pdf"
 
     def _inspect_sync(
         self,

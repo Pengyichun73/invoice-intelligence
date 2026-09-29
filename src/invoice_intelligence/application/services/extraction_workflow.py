@@ -65,6 +65,7 @@ class ExtractionWorkflowService:
         tenant_id: str,
         trace_id: str | None = None,
         idempotency_key: str | None = None,
+        actor_id: str | None = None,
     ) -> ExtractionRunRecord:
         """Start one new extraction run for an existing document."""
 
@@ -96,6 +97,7 @@ class ExtractionWorkflowService:
                 idempotency_hash=key_hash,
                 request_hash=request_hash,
                 trace_id=trace_id,
+                actor_id=actor_id,
             )
         workflow = self._require_workflow()
         await workflow.start(identity, document, normalized_tenant_id, trace_id=trace_id)
@@ -103,6 +105,9 @@ class ExtractionWorkflowService:
         if run is None:
             raise WorkflowPersistenceError("Extraction run was not persisted")
         return run
+
+    async def list_recent_runs(self, tenant_id: str, actor_id: str) -> list[ExtractionRunRecord]:
+        return await self._query_repository.list_recent_runs(tenant_id, actor_id, 30)
 
     async def get_run(self, run_id: str, tenant_id: str) -> ExtractionRunRecord:
         run = await self._query_repository.get_run(run_id, tenant_id)

@@ -29,6 +29,8 @@ from invoice_intelligence.infrastructure.persistence.sqlalchemy_models import (
     EvaluationRunRow,
     EvaluationScheduleRow,
     EvaluationSnapshotRow,
+    MemoryBenefitJobCaseRow,
+    MemoryBenefitRunRow,
 )
 from invoice_intelligence.infrastructure.reporting.postgres_evaluation import (
     report_artifacts_match,
@@ -53,6 +55,24 @@ class SQLAlchemyEvaluationJobRepository(EvaluationJobRepository):
         return await asyncio.to_thread(
             self._create_job_sync, job, request_sha256, idempotency_key_hash
         )
+
+    async def create_memory_benefit_job(
+        self, job: EvaluationJob, request_sha256: str,
+        idempotency_key_hash: str, document_ids: tuple[str, ...],
+    ) -> EvaluationJob:
+        return await asyncio.to_thread(
+            self._create_job_sync, job, request_sha256, idempotency_key_hash, document_ids
+        )
+
+    async def get_memory_benefit_documents(
+        self, tenant_id: str, job_id: str
+    ) -> tuple[str, ...]:
+        return await asyncio.to_thread(self._benefit_documents_sync, tenant_id, job_id)
+
+    async def complete_memory_benefit(
+        self, job: EvaluationJob, benefit_run_id: str
+    ) -> None:
+        await asyncio.to_thread(self._complete_memory_benefit_sync, job, benefit_run_id)
 
     async def get_job(self, tenant_id: str, job_id: str) -> EvaluationJob | None:
         return await asyncio.to_thread(self._get_job_sync, tenant_id, job_id)
@@ -138,6 +158,7 @@ class SQLAlchemyEvaluationJobRepository(EvaluationJobRepository):
 
     def _create_job_sync(
         self, job: EvaluationJob, request_sha256: str, idempotency_key_hash: str | None,
+        document_ids: tuple[str, ...] = (),
     ) -> EvaluationJob:
         try:
             with self._sessions.begin() as session:
@@ -149,7 +170,10 @@ class SQLAlchemyEvaluationJobRepository(EvaluationJobRepository):
                         )
                     )
                     if existing is not None:
-                        if existing.request_sha256 != request_sha256:
+                        if (
+                            existing.request_sha256 != request_sha256
+                            or existing.evidence_class != job.evidence_class
+                        ):
                             raise ResourceConflictError("Idempotency key was reused with different content")
                         return _job_from_row(existing)
                 dataset_key = None
@@ -192,6 +216,15 @@ class SQLAlchemyEvaluationJobRepository(EvaluationJobRepository):
                         updated_at=job.updated_at,
                     )
                 )
+                if job.evidence_class == "memory_benefit":
+                    if not document_ids or len(document_ids) != len(set(document_ids)):
+                        raise ResourceConflictError("Memory benefit Job case list is invalid")
+                    session.flush()
+                    for ordinal, document_id in enumerate(document_ids):
+                        session.add(MemoryBenefitJobCaseRow(
+                            job_id=job.job_id, ordinal=ordinal,
+                            tenant_id=job.tenant_id, document_id=document_id,
+                        ))
                 return job
         except ResourceConflictError:
             raise
@@ -199,6 +232,20 @@ class SQLAlchemyEvaluationJobRepository(EvaluationJobRepository):
             raise ResourceConflictError("Evaluation job already exists") from exc
         except SQLAlchemyError as exc:
             raise WorkflowPersistenceError("Unable to persist evaluation job") from exc
+
+    def _benefit_documents_sync(self, tenant_id: str, job_id: str) -> tuple[str, ...]:
+        with self._sessions() as session:
+            job = session.scalar(select(EvaluationJobRow).where(
+                EvaluationJobRow.tenant_id == tenant_id,
+                EvaluationJobRow.job_id == job_id,
+                EvaluationJobRow.evidence_class == "memory_benefit",
+            ))
+            if job is None:
+                return ()
+            return tuple(session.scalars(select(MemoryBenefitJobCaseRow.document_id).where(
+                MemoryBenefitJobCaseRow.tenant_id == tenant_id,
+                MemoryBenefitJobCaseRow.job_id == job_id,
+            ).order_by(MemoryBenefitJobCaseRow.ordinal)))
 
     def _get_job_sync(self, tenant_id: str, job_id: str) -> EvaluationJob | None:
         with self._sessions() as session:
@@ -361,6 +408,50 @@ class SQLAlchemyEvaluationJobRepository(EvaluationJobRepository):
                     "report_schema_version": run.report_schema_version,
                     "variant_count": len(run.results),
                     "artifact_count": len(run.artifact_references),
+                },
+                created_at=now,
+            ))
+
+    def _complete_memory_benefit_sync(
+        self, job: EvaluationJob, benefit_run_id: str
+    ) -> None:
+        now = datetime.now(UTC)
+        with self._sessions.begin() as session:
+            row = self._assert_lease(session, job)
+            if row.evidence_class != "memory_benefit":
+                raise ResourceConflictError("Job is not a memory benefit evaluation")
+            benefit = session.scalar(select(MemoryBenefitRunRow).where(
+                MemoryBenefitRunRow.tenant_id == row.tenant_id,
+                MemoryBenefitRunRow.run_id == benefit_run_id,
+                MemoryBenefitRunRow.status == "completed",
+            ))
+            document_count = len(session.scalars(select(MemoryBenefitJobCaseRow.document_id).where(
+                MemoryBenefitJobCaseRow.tenant_id == row.tenant_id,
+                MemoryBenefitJobCaseRow.job_id == row.job_id,
+            )).all())
+            if benefit is None or (
+                row.dataset_version != benefit.dataset_digest
+                or row.schema_version != benefit.schema_version
+                or row.catalog_version != benefit.catalog_version
+                or row.index_version != benefit.index_version
+                or row.model_version != benefit.model_version
+                or row.prompt_version != benefit.prompt_version
+                or benefit.case_count != document_count
+            ):
+                raise ResourceConflictError("Benefit Run and Job bindings do not match")
+            row.status = EvaluationJobStatus.COMPLETED.value
+            row.evaluation_run_id = benefit_run_id
+            row.worker_id = row.lease_token = row.lease_expires_at = None
+            row.updated_at = now
+            session.add(EvaluationJobReportRow(
+                report_id=sha256(f"report:{job.job_id}".encode()).hexdigest(),
+                job_id=job.job_id, tenant_id=row.tenant_id,
+                metrics_json={
+                    "evidence_class": "memory_benefit",
+                    "benefit_run_id": benefit_run_id,
+                    "case_count": benefit.case_count,
+                    "coverage_sufficient": benefit.metrics_json.get("coverage_sufficient") is True,
+                    "passed": benefit.metrics_json.get("passed") is True,
                 },
                 created_at=now,
             ))

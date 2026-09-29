@@ -107,7 +107,12 @@ class AuthorizationPolicy:
         if Permission.INDEX_REBUILD in effective or Permission.INDEX_ACTIVATE in effective:
             memory.add(MemoryPermission.REBUILD_INDEX)
         if Permission.EVALUATION_RUN in effective:
-            memory.add(MemoryPermission.READ_EVALUATION)
+            memory.update({
+                MemoryPermission.READ_EVALUATION,
+                MemoryPermission.ADJUDICATE_GOLD,
+            })
+        if Permission.REVIEW_SUBMIT in effective:
+            memory.add(MemoryPermission.SUBMIT_GOLD)
         return TrustedTenantContext(
             tenant_id=context.tenant_id,
             actor_id=context.reviewer_id,

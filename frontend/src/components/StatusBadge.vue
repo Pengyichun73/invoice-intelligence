@@ -23,6 +23,11 @@ const statusLabels = {
   failed_retryable: '等待重试',
   consistent: '结果一致',
   invalid: '无效',
+  observed: '已观察到', not_observed: '未观察到',
+  insufficient_evidence: '证据不足', demonstrated: '收益达标', not_demonstrated: '未证明收益',
+  segmenting: '正在分段', needs_boundary_review: '待确认边界',
+  too_many_invoices: '超过五张', extracting: '正在提取', dispatched: '已建立任务',
+  queued: '排队中', proposed: '边界已确认', needs_review: '待确认边界',
 }
 </script>
 

@@ -97,7 +97,7 @@ function handleKeydown(event) {
             <span v-if="approvedCases(field.path).length">已准入案例 {{ approvedCases(field.path).length }}</span>
             <span v-else-if="admissionsByField[field.path]?.length">审核候选 <StatusBadge :value="admissionsByField[field.path][0].status" /></span>
             <span v-else>{{ loading ? '准入读取中' : admissionError ? '准入未查询' : '仅提取结果' }}</span>
-            <div v-if="approvedCases(field.path).length" class="run-case-values"><div v-for="item in approvedCases(field.path)" :key="item.admission_id">已审核案例值：{{ formatFieldValue(field.path, item.reviewed_value) }}</div></div>
+            <div v-if="approvedCases(field.path).length" class="run-case-values"><div v-for="item in approvedCases(field.path)" :key="item.admission_id">历史审核案例值（非本次结果）：{{ formatFieldValue(field.path, item.reviewed_value) }}</div></div>
           </div>
           <p v-if="!fields.length" class="empty-row">当前运行未返回结构化字段</p>
         </div>
@@ -112,9 +112,9 @@ function handleKeydown(event) {
 .run-fields-id { overflow-wrap: anywhere; }
 .run-fields-list { overflow: auto; min-height: 0; border-top: 1px solid #31454d; }
 .run-fields-row { display: grid; grid-template-columns: minmax(130px, .8fr) minmax(0, 1.4fr) 120px; gap: 12px; align-items: start; padding: 10px 4px; border-bottom: 1px solid #253442; }
-.run-fields-row strong { overflow-wrap: anywhere; white-space: pre-wrap; font-size: 11px; font-weight: 500; }
-.run-fields-row > span { text-align: right; font-size: 11px; }
-.run-case-values { grid-column: 2 / -1; color: #8ebfc0; font-size: 11px; overflow-wrap: anywhere; }
+.run-fields-row strong { overflow-wrap: anywhere; white-space: pre-wrap; font-size: 14px; font-weight: 500; }
+.run-fields-row > span { text-align: right; font-size: 14px; }
+.run-case-values { grid-column: 2 / -1; color: #8ebfc0; font-size: 14px; overflow-wrap: anywhere; }
 .dialog-error { color: #ef9198; }
 @media (max-width: 640px) { .run-fields-row { grid-template-columns: minmax(0, 1fr) auto; } .run-fields-row strong { grid-column: 1 / -1; grid-row: 2; } .run-case-values { grid-column: 1 / -1; } }
 </style>

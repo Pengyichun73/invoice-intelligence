@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from fastapi import Depends, Request
 
-from invoice_intelligence.application.errors import ForbiddenError
+from invoice_intelligence.application.errors import ForbiddenError, ServiceUnavailableError
 from invoice_intelligence.application.ports.auth import AuthContextProvider, SecurityAuditSink
 from invoice_intelligence.application.ports.observability import PrivacyTelemetry
 from invoice_intelligence.application.services.accounting import AccountingService
@@ -16,10 +16,15 @@ from invoice_intelligence.application.services.document_access import DocumentAc
 from invoice_intelligence.application.services.document_ingestion import (
     DocumentIngestionService,
 )
+from invoice_intelligence.application.services.invoice_batches import InvoiceBatchService
 from invoice_intelligence.application.services.evaluation_jobs import EvaluationJobService
 from invoice_intelligence.application.services.extraction_workflow import (
     ExtractionWorkflowService,
 )
+from invoice_intelligence.application.services.memory_effectiveness import (
+    MemoryEffectivenessService,
+)
+from invoice_intelligence.application.services.memory_gold import MemoryGoldService
 from invoice_intelligence.application.services.memory_governance import (
     MemoryGovernanceService,
 )
@@ -77,6 +82,9 @@ class ApiDependencies:
     accounting_service: AccountingService
     tenant_context_resolver: TenantContextResolver
     authorization_policy: AuthorizationPolicy
+    invoice_batch_service: InvoiceBatchService | None = None
+    memory_effectiveness_service: MemoryEffectivenessService | None = None
+    memory_gold_service: MemoryGoldService | None = None
     auth_context_provider: AuthContextProvider | None = None
     security_audit_sink: SecurityAuditSink | None = None
     privacy_telemetry: PrivacyTelemetry | None = None
@@ -123,6 +131,20 @@ def get_memory_governance_service(
     dependencies: ApiDependencyBundle,
 ) -> MemoryGovernanceService:
     return dependencies.memory_governance_service
+
+
+def get_memory_effectiveness_service(
+    dependencies: ApiDependencyBundle,
+) -> MemoryEffectivenessService:
+    if dependencies.memory_effectiveness_service is None:
+        raise RuntimeError("Memory effectiveness service is not initialized")
+    return dependencies.memory_effectiveness_service
+
+
+def get_memory_gold_service(dependencies: ApiDependencyBundle) -> MemoryGoldService:
+    if dependencies.memory_gold_service is None:
+        raise ServiceUnavailableError("Gold annotation storage is not configured")
+    return dependencies.memory_gold_service
 
 
 def get_review_task_service(request: Request) -> ReviewTaskService:
@@ -207,6 +229,11 @@ MemoryGovernanceServiceDependency = Annotated[
     MemoryGovernanceService,
     Depends(get_memory_governance_service),
 ]
+MemoryEffectivenessServiceDependency = Annotated[
+    MemoryEffectivenessService,
+    Depends(get_memory_effectiveness_service),
+]
+MemoryGoldServiceDependency = Annotated[MemoryGoldService, Depends(get_memory_gold_service)]
 ReviewTaskServiceDependency = Annotated[
     ReviewTaskService,
     Depends(get_review_task_service),

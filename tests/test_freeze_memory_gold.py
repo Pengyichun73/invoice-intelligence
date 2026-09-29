@@ -40,7 +40,7 @@ def test_freeze_requires_two_labels_and_explicit_adjudication() -> None:
             "document_checksum", "template_group", "schema_version",
             "model_version", "prompt_version", "catalog_version", "index_version",
         )},
-        "adjudicator_id": "reviewer-b",
+        "adjudicator_id": "reviewer-c",
         "field_choices": {"invoice_number": "first"},
     }
     data, summary = prepare_frozen_gold(
@@ -61,7 +61,7 @@ def test_freeze_rejects_unadjudicated_difference() -> None:
             "document_checksum", "template_group", "schema_version",
             "model_version", "prompt_version", "catalog_version", "index_version",
         )},
-        "adjudicator_id": "reviewer-b",
+        "adjudicator_id": "reviewer-c",
         "field_choices": {},
     }
     with pytest.raises(ValueError, match="adjudicate"):
@@ -87,7 +87,7 @@ def test_freeze_rejects_same_reviewer_or_missing_current_evidence() -> None:
             {"case-1": first}, {"case-1": second}, {"case-1": decision}
         )
     second["annotator_id"] = "reviewer-b"
-    decision["adjudicator_id"] = "reviewer-b"
+    decision["adjudicator_id"] = "reviewer-c"
     first["fields"]["invoice_number"].pop("bounding_box")
     with pytest.raises(ValueError, match="current-image evidence"):
         prepare_frozen_gold(

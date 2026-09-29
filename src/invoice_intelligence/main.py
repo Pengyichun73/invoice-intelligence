@@ -47,8 +47,11 @@ app = create_app(
     ApiDependencies(
         settings=_container.settings,
         document_ingestion_service=_container.document_ingestion_service,
+        invoice_batch_service=_container.invoice_batch_service,
         document_access_service=_container.document_access_service,
         memory_governance_service=_container.memory_governance_service,
+        memory_effectiveness_service=_container.memory_effectiveness_service,
+        memory_gold_service=_container.memory_gold_service,
         accounting_service=_container.accounting_service,
         promotion_candidate_service=_container.promotion_candidate_service,
         tenant_context_resolver=RequestStateTenantContextResolver(),

@@ -121,6 +121,15 @@ class EvaluationJob:
                 self.evaluation_run_id is not None
             ):
                 raise ValueError("Completed Suite Job requires an evaluation Run binding")
+        elif self.evidence_class == "memory_benefit":
+            if (
+                self.snapshot_id is not None or not self.dataset_id
+                or self.suite is not None or not self.catalog_version
+                or self.retrieval_policy_version is not None
+                or (self.status is EvaluationJobStatus.COMPLETED)
+                != (self.evaluation_run_id is not None)
+            ):
+                raise ValueError("Memory benefit Job requires immutable gold bindings")
         else:
             raise ValueError("Evaluation evidence class is invalid")
 

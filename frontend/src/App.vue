@@ -21,6 +21,7 @@ import AuditLog from './views/AuditLog.vue'
 import ConflictGovernance from './views/ConflictGovernance.vue'
 import Dashboard from './views/Dashboard.vue'
 import EvaluationResults from './views/EvaluationResults.vue'
+import MemoryEffectiveness from './views/MemoryEffectiveness.vue'
 import GovernanceOperations from './views/GovernanceOperations.vue'
 import ExampleGovernance from './views/ExampleGovernance.vue'
 import ExtractionWorkbench from './views/ExtractionWorkbench.vue'
@@ -92,6 +93,7 @@ const groups = [
     items: [
       { key: 'indexes', label: '索引治理', icon: Database, component: IndexGovernance },
       { key: 'evaluations', label: '评估结果', icon: BarChart3, component: EvaluationResults },
+      { key: 'effectiveness', label: '记忆效果', icon: BarChart3, component: MemoryEffectiveness },
       { key: 'operations', label: '后台操作', icon: ShieldCheck, component: GovernanceOperations },
       { key: 'audits', label: '审计记录', icon: ScrollText, component: AuditLog },
     ],

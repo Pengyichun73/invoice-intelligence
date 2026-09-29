@@ -237,6 +237,7 @@ class InvoiceWorkflowNodes(Generic[InvoiceT]):
                 self._dependencies.output_schema,
             )
             result = self._with_reviewed_example_conflicts(result, state)
+            result = self._with_cross_page_field_conflicts(result)
             outcome = self._dependencies.extraction_validator.validate(result)
             outcome = self._with_field_binding_validation(result, outcome)
             await self._record_retrieval_route(state, outcome.requires_review)
@@ -623,6 +624,32 @@ class InvoiceWorkflowNodes(Generic[InvoiceT]):
                 "status": WorkflowStatus.COMPLETED.value,
                 "failure_message": None,
             }
+
+    @staticmethod
+    def _with_cross_page_field_conflicts(
+        result: ExtractionResult[InvoiceT],
+    ) -> ExtractionResult[InvoiceT]:
+        by_path: dict[str, dict[int, set[str]]] = {}
+        for observation in result.ocr_observations:
+            if observation.page_number is None or not observation.candidate_values:
+                continue
+            by_path.setdefault(observation.field_path, {}).setdefault(
+                observation.page_number, set()
+            ).update(value.strip() for value in observation.candidate_values if value.strip())
+        additions = []
+        existing = {(item.code, item.field_path) for item in result.anomalies}
+        for field_path, pages in by_path.items():
+            if len(pages) < 2 or len(set.union(*pages.values())) < 2:
+                continue
+            if ("cross_page_field_conflict", field_path) in existing:
+                continue
+            additions.append(ExtractionAnomaly(
+                code="cross_page_field_conflict",
+                message="同一字段在不同页出现不同候选值；请按证据页码和位置逐项核对，防止跨页串值。",
+                field_path=field_path,
+                page_number=None,
+            ))
+        return replace(result, anomalies=(*result.anomalies, *additions)) if additions else result
 
     def _with_field_binding_validation(
         self,

@@ -50,9 +50,10 @@ class SQLAlchemyExtractionQueueRepository:
         idempotency_hash: str | None,
         request_hash: str,
         trace_id: str | None,
+        actor_id: str | None = None,
     ) -> ExtractionRunRecord:
         return await asyncio.to_thread(
-            self._enqueue_start_sync, identity, tenant_id, idempotency_hash, request_hash, trace_id
+            self._enqueue_start_sync, identity, tenant_id, idempotency_hash, request_hash, trace_id, actor_id
         )
 
     def _enqueue_start_sync(
@@ -62,6 +63,7 @@ class SQLAlchemyExtractionQueueRepository:
         idempotency_hash: str | None,
         request_hash: str,
         trace_id: str | None,
+        actor_id: str | None,
     ) -> ExtractionRunRecord:
         try:
             with self._sessions.begin() as session:
@@ -81,6 +83,8 @@ class SQLAlchemyExtractionQueueRepository:
                         run = session.get(ExtractionRunRow, existing.run_id)
                         if run is None:
                             raise WorkflowPersistenceError("Queued extraction run is missing")
+                        if actor_id is not None and run.created_by != actor_id:
+                            raise IdempotencyConflictError("Extraction key belongs to another actor")
                         return self._run_record(run)
                 document = session.scalar(
                     select(DocumentRow).where(
@@ -94,6 +98,7 @@ class SQLAlchemyExtractionQueueRepository:
                 run = ExtractionRunRow(
                     run_id=identity.run_id,
                     tenant_id=tenant_id,
+                    created_by=actor_id,
                     thread_id=identity.thread_id,
                     document_id=identity.document_id,
                     status=WorkflowStatus.RECEIVED.value,
@@ -143,6 +148,8 @@ class SQLAlchemyExtractionQueueRepository:
                             ) from exc
                         run = session.get(ExtractionRunRow, existing.run_id)
                         if run is not None:
+                            if actor_id is not None and run.created_by != actor_id:
+                                raise IdempotencyConflictError("Extraction key belongs to another actor") from exc
                             return self._run_record(run)
             raise WorkflowPersistenceError("Unable to enqueue extraction") from exc
         except SQLAlchemyError as exc:

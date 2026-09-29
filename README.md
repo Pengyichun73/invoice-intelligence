@@ -1,32 +1,78 @@
 # Invoice Intelligence
 
-隔离双人验收使用项目自带 Keycloak：见
-[`docs/docker-deployment.md`](docs/docker-deployment.md) 的“隔离 OIDC 双人验收”。
+## 多发票批次提取（隔离验收功能）
+
+“发票提取”页面提供单张/多张模式。多张模式一次最多上传五个 PNG、JPG、WEBP
+或 PDF 文件，后端持久化批次，独立 Worker 根据当前图片与 OCR 提出票据区域和跨页归属。
+区域不确定或 OCR 不可用时须先人工确认；合计超过五张时不创建子票 Run。
+每张已确认票据生成独立 Document、Run 和审核任务，失败 Run 可逐票重试。
+子票从原始图片像素或 PDF 目标区域裁切；PDF 区域质量不足时最多受限地重渲染一次。
+子票原生尺寸和清晰度沿用现有 Validator 路由，低质票据进入人工审核；整页 OCR
+仅在低质时作为区域内的辅助比对证据，不直接填充字段。
+当前浏览器会话自动恢复最近批次；关闭浏览器后可在多张发票页面选择当前账号最近
+30 个 `batch_id`，或手动输入编号，查询逐票 `run_id`、状态、结果和审核入口。
+单张发票页面也提供当前账号最近 30 个 `run_id`。列表按创建时间倒序，由后端以
+可信租户和 actor 身份过滤；迁移前没有创建人记录的旧任务不会列出，仍可按已知 ID 查询。
+点击“开始批次提取”即先持久化 `open` 批次，随后上传文件并转为分段处理；最近批次列表
+持续刷新。子票建立后，查询状态根据数据库中的子 Run 显示提取中、待审核、已完成或失败。
+原件及派生文件仍按租户鉴权。该列表需要执行 `20260928_0051_invoice_owner_lists` 迁移并重建后端。
+跨页 OCR 同字段异值触发人工审核，审核弹窗展示来源页和原票据区域；缺少定位框时
+明确标记“无法定位”。该功能尚未经过真实多票 PDF 隔离验收，不得视为生产就绪。
+
+Docker 应用镜像构建使用 pip 下载缓存、120 秒读取超时和有限重试；网络中断后重新构建可复用已下载依赖。
+
+pytest 缓存位于 `pytest_cache/.pytest_cache`；创建缓存时的临时目录位于
+`pytest_cache/pytest-cache-files-*`。
+
+统一本地开发项目 `invoice-intelligence` 使用项目自带 Keycloak：见
+[`docs/docker-deployment.md`](docs/docker-deployment.md) 的“统一本地开发环境”。
 前端通过 Authorization Code + PKCE 登录；后端仍只信任经签名验证的
-`tenant_id`、`reviewer_id` 和角色 claim。默认开发环境不受验收配置影响。
+`tenant_id`、`reviewer_id` 和角色 claim。`invoice-acceptance` 仅保留为已迁移的
+Keycloak realm 名，不再作为单独 Docker 项目。
 
 ## 当前项目状态
 
-隔离验收后端、Worker、依赖和 GPU OCR 可用同一个脚本管理：
-`./scripts/manage-acceptance.ps1 -Action start`。默认 `Auto` 模式先复用已运行的宿主机
-`127.0.0.1:8077`；不存在时启动独立 Docker GPU OCR，容器内同样使用 8077、`gpu:0`
-和 `conf/ocr/ppocrv6_small_v1.yaml`。`-Action status/stop` 仅管理隔离 Compose，
-不终止已有宿主 OCR；首次 Docker OCR 启动可能需拉取较大的官方 GPU 基础镜像和模型。
+本地后端、Worker 和依赖通过
+`./scripts/manage-intelligence.ps1 -Action start` 管理；脚本按项目配置自动后台启动
+宿主机 `127.0.0.1:8077` OCR，并等待 `/ocr` 就绪。加 `-IncludeFrontend` 可同时启动
+15173 前端；`stop` 只终止脚本记录的本机 OCR/前端进程，不终止手动启动的服务。
+脚本不构建或启动 Docker OCR。
 完整命令与端口边界见 [`docs/docker-deployment.md`](docs/docker-deployment.md)。
 记忆增强的价值、安全边界及分阶段改造见
 [`docs/memory-extraction-roadmap.md`](docs/memory-extraction-roadmap.md)；相似案例不等于同一发票。
 值盲案例 Prompt、新建 `field-pattern-v1-` 索引投影和默认关闭的区域重读已具备代码入口；
-隔离标注冻结使用 `scripts/freeze_memory_gold.py`，输入输出须放在受控存储。
+离线标注冻结使用 `scripts/freeze_memory_gold.py`，要求两名独立标注人与第三名裁决人，
+输入输出须放在受控存储。后端 `POST /api/v1/memory/gold/{document_id}/annotations`、
+`/adjudication` 和 `GET /api/v1/memory/gold/{document_id}` 已有可信身份及租户作用域的
+标注事实入口；须先配置私有 S3/MinIO `INVOICE_INTELLIGENCE_MEMORY_GOLD_BUCKET` 并执行
+`0046` 至 `0049` migration，未配置时返回 503。字段值只写入私有对象，PostgreSQL 保存
+身份、版本、引用及 checksum。新服务尚未经过真实 MinIO 隔离验收。
+`GET /api/v1/memory/effectiveness/{overview,stages,scenarios,runs/{run_id}}` 提供
+只读运行状态与收益证据查询，窗口内事件计数和当前活动投影分别标识；无合格配对结果时
+返回 `insufficient_evidence`。
+Vue 控制台的“记忆效果”页分别展示运行事实和配对收益，保留原 Suite 评估页；证据不足时
+不展示改善百分比。提取工作台在会话内保存待确认的文档 ID 与原请求幂等键，刷新后可安全
+续接；审核冲突重读权威状态，已被领取的任务只读。Gold 标注和配对任务入口默认关闭，
+须在已配置私有 Gold Bucket 的前端环境显式设置 `VITE_MEMORY_GOLD_ENABLED=true`；403/503
+分别表示权限不足/依赖不可用。当前 Gold 查询不返回分歧内容，前端不开放第三人
+裁决提交。此处仅表示前端代码已接入，真实发票、MinIO 和 Worker 仍需现场验收。
 `MemoryBenefitEvaluationService` 已提供逐张发票的真实三变体提取调用，跳过评估产物与检索
 Telemetry 写入，要求完整当前图片真值、运行版本和活动值盲索引一致；输出仅含脱敏逐字段判定。
-它尚未接入独立批量运行器，也未用完整标注集现场运行。shadow、灰度及异机备份未完成，
+`POST /api/v1/evaluations/memory-benefit-jobs` 已接入现有 Evaluation Job 队列，按冻结文档
+批量调用三变体，持久化脱敏判定并由效果查询读取；场景按字段、模板组、图片质量、OCR
+状态和受控错误类别汇总。未配置私有标注 Bucket、Vision 或值盲检索
+时拒绝创建任务。迁移未在目标库执行，尚未用完整标注集现场运行。
+目前仅有本机 MinIO，独立异机 MinIO 加密备份及恢复演练、shadow 差异持久化、
+字段/模板受控 apply 和灰度均未完成，
 不能宣称记忆已产生业务收益或生产可用。
 
-2026-09-27 新增隔离 Compose 的持久化异步提取路径：业务 PostgreSQL `0045` 队列迁移、
+2026-09-27 新增持久化异步提取路径：业务 PostgreSQL `0045` 队列迁移、
 共享 PostgreSQL Checkpointer、独立 `extraction-worker`、提取 `Idempotency-Key` 重放和前端
-`run_id` 会话恢复。隔离 Compose 已完成迁移、Keycloak 双账号与前端 PKCE 登录配置；
+`run_id` 会话恢复。2026-09-28 已将验收项目数据迁入默认 Compose 项目；
+Keycloak 双账号与前端 PKCE 登录配置沿用原 realm。
 两个验收账号的 OIDC PKCE、JWT 校验、API 角色隔离和浏览器页面入口已验证；
-实际审核事实、准入、Milvus 投影及第二张发票召回仍**尚未完成本轮隔离验收**。
+用户报告双身份审核准入已在原环境完成；迁移后核对业务库和 Milvus 投影清单一致，
+但第二张发票的识别收益仍未量化，目标项目的提取 Worker 尚未重启验收。
 本地 Uvicorn 默认继续同步执行。
 首阶段验收清单与明确阻塞见 [`docs/project-status.md`](docs/project-status.md)。
 
@@ -1081,12 +1127,14 @@ Catalog/Index Version 和投影状态。人工提交先形成不可变审核事�
 每行需有 `case_id`、`template_group`、`variant`、`document_checksum`、完整人工真值标记
 `gold_complete=true`、`ocr_healthy`、五个版本键（`schema_version`、`model_version`、
 `prompt_version`、`catalog_version`、`index_version`）以及 19 个字段各自的
-`review_required`、`auto_accepted`、`correct` 布尔值；不得包含发票原值。
-不足 20 张或少于 3 类模板不宣称通过；记忆相对 OCR 组须降审至少 20%、无错放且准确字段数不下降。
+`review_required`、`auto_accepted`、`correct` 布尔值及 `elapsed_ms`；不得包含发票原值。
+不足 20 张或少于 3 类模板不宣称通过；记忆相对 OCR 组须降审至少 20%、无错放、
+准确字段数不下降，且 p95 额外耗时不超过 10 秒。重复 checksum 的被测原件被拒绝。
 逐张调用入口位于 `src/invoice_intelligence/application/services/memory_benefit_evaluation.py`：
 Vision 关闭 OCR，Vision+OCR 关闭记忆，记忆组从 OCR 基线的待审字段中选择已召回案例并
 调用现有提取引擎及区域重读。它校验冻结文档 checksum、19 字段图片证据、运行版本、
-活动值盲索引和 OCR 可用性，拒绝不完整配对；目前未提供面向真实数据的 CLI 或 API，
+活动值盲索引和 OCR 可用性，拒绝不完整配对；批量入口为
+`POST /api/v1/evaluations/memory-benefit-jobs`（需可信 Evaluation 权限和 `Idempotency-Key`），
 不得将此服务的单元测试当作已完成的 20 张现场验收。
 Milvus 案例 Collection 保存对应 Catalog、模板指纹和时间戳 Scalar 字段，但只保存脱敏文本与向量。
 查询仍会回查 PostgreSQL Admission、审核和有效状态，历史值永远不能覆盖当前图片证据。

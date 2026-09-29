@@ -75,6 +75,11 @@ class IdempotencyRecord:
 class BusinessQueryRepository(Protocol):
     """Read business state without consulting LangGraph checkpoints."""
 
+    async def list_recent_runs(self, tenant_id: str, actor_id: str, limit: int) -> list[ExtractionRunRecord]:
+        """Return recent single-invoice runs owned by the trusted actor."""
+
+        ...
+
     async def get_run(
         self,
         run_id: str,

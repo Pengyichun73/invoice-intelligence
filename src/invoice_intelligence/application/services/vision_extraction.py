@@ -8,6 +8,7 @@ from dataclasses import replace
 from hashlib import sha256
 from hmac import compare_digest
 from io import BytesIO
+from statistics import median
 from typing import Generic, Literal, TypeVar, cast
 from uuid import uuid4
 
@@ -16,7 +17,9 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from invoice_intelligence.application.errors import DocumentIntegrityError
 from invoice_intelligence.application.ports.document_processor import DocumentProcessor
+from invoice_intelligence.application.ports.document_repository import DocumentReferenceRepository
 from invoice_intelligence.application.ports.file_storage import FileStorage
+from invoice_intelligence.application.ports.invoice_batches import InvoiceBatchRepository
 from invoice_intelligence.application.ports.memory import CorrectionScopeResolver
 from invoice_intelligence.application.ports.observability import PrivacyTelemetry, TraceStage
 from invoice_intelligence.application.ports.validation import (
@@ -52,6 +55,7 @@ from invoice_intelligence.domain.extraction import (
     OCRFieldObservation,
     OCRProviderStatus,
     PromptContextBudget,
+    RawOCRObservation,
     RawOCRResult,
     Readability,
     VisionPromptContext,
@@ -86,6 +90,11 @@ class VisionExtractionService(Generic[InvoiceT]):
         privacy_telemetry: PrivacyTelemetry | None = None,
         artifact_service: DocumentArtifactService | None = None,
         targeted_reread_mode: Literal["off", "shadow", "apply"] = "off",
+        batch_repository: InvoiceBatchRepository | None = None,
+        document_repository: DocumentReferenceRepository | None = None,
+        batch_min_width: int = 800,
+        batch_min_height: int = 600,
+        batch_min_clarity: float = 0.45,
     ) -> None:
         if not schema_version.strip() or schema_version != schema_version.strip():
             raise ValueError("schema_version must be non-empty and normalized")
@@ -112,6 +121,11 @@ class VisionExtractionService(Generic[InvoiceT]):
         if targeted_reread_mode not in {"off", "shadow", "apply"}:
             raise ValueError("targeted_reread_mode must be off, shadow, or apply")
         self._targeted_reread_mode = targeted_reread_mode
+        self._batch_repository = batch_repository
+        self._document_repository = document_repository
+        self._batch_min_width = batch_min_width
+        self._batch_min_height = batch_min_height
+        self._batch_min_clarity = batch_min_clarity
 
     async def extract(
         self,
@@ -152,10 +166,21 @@ class VisionExtractionService(Generic[InvoiceT]):
                 ),
                 self._limits,
             )
+            source_context = (
+                await self._batch_repository.source_for_child(document.document_id, tenant_id)
+                if self._batch_repository is not None else None
+            )
+            render_limits = (
+                replace(self._limits, pdf_render_dpi=(
+                    300 if any(page.get("render_attempts") == 2
+                               for page in source_context["derived_pages"])
+                    else min(self._limits.pdf_render_dpi, 300)
+                )) if source_context is not None else self._limits
+            )
             images = await self._document_processor.to_vision_images(
                 content=content,
                 inspected=inspected,
-                limits=self._limits,
+                limits=render_limits,
             )
             if persist_artifacts and self._artifact_service is not None:
                 try:
@@ -171,6 +196,46 @@ class VisionExtractionService(Generic[InvoiceT]):
                         extra={"error_type": type(exc).__name__},
                     )
             page_quality = await self._image_quality_analyzer.analyze(images)
+            if source_context is not None:
+                native = source_context["derived_pages"]
+                if len(native) != len(page_quality):
+                    raise DocumentIntegrityError("Batch source page metadata is incomplete")
+                page_quality = tuple(replace(
+                    page, width=min(page.width, int(meta.get("native_width", page.width))),
+                    height=min(page.height, int(meta.get("native_height", page.height))),
+                    clarity_score=min(
+                        page.clarity_score,
+                        float(meta.get("native_clarity_milli", 1000)) / 1000,
+                    ),
+                ) for page, meta in zip(page_quality, native, strict=True))
+        batch_quality_blockers = tuple(
+            code for code, failed in (
+                ("batch_native_resolution_low", any(
+                    page.width < self._batch_min_width or page.height < self._batch_min_height
+                    for page in page_quality
+                )),
+                ("batch_clarity_low", any(
+                    page.clarity_score < self._batch_min_clarity for page in page_quality
+                )),
+            ) if source_context is not None and failed
+        )
+        source_ocr_task = (
+            asyncio.create_task(self._observe_batch_source(
+                source_context, images, tenant_id, document.document_id,
+            ))
+            if source_context is not None and batch_quality_blockers
+            and include_ocr and self._raw_ocr_providers and self._document_repository is not None
+            else None
+        )
+        if source_context is not None:
+            _LOGGER.info("batch_crop_quality", extra={
+                "document_id": document.document_id,
+                "blocker_codes": batch_quality_blockers,
+                "native_sizes": tuple((page.width, page.height) for page in page_quality),
+                "render_attempts": tuple(
+                    item.get("render_attempts", 1) for item in source_context["derived_pages"]
+                ),
+            })
         _LOGGER.info(
             "vision_input_quality",
             extra={
@@ -232,6 +297,10 @@ class VisionExtractionService(Generic[InvoiceT]):
             result = replace(
                 result,
                 page_quality=page_quality,
+                anomalies=(*result.anomalies, *(
+                    ExtractionAnomaly(code, "批次票据区域图像质量不足，需核对原件", None, None)
+                    for code in batch_quality_blockers
+                )),
             )
             with self._span(
                 resolved_trace_id,
@@ -250,14 +319,107 @@ class VisionExtractionService(Generic[InvoiceT]):
                 targeted_reread_mode=targeted_reread_mode,
                 legacy_ocr_task=legacy_ocr_task,
                 raw_ocr_tasks=raw_ocr_tasks,
+                source_ocr_task=source_ocr_task,
                 tenant_id=tenant_id,
                 document_id=document.document_id,
             )
         except BaseException:
             for task in ocr_tasks:
                 task.cancel()
+            if source_ocr_task is not None:
+                source_ocr_task.cancel()
             await asyncio.gather(*ocr_tasks, return_exceptions=True)
+            if source_ocr_task is not None:
+                await asyncio.gather(source_ocr_task, return_exceptions=True)
             raise
+
+    async def _observe_batch_source(
+        self, context: dict, images: Sequence[VisionImage], tenant_id: str,
+        child_document_id: str,
+    ) -> RawOCRResult:
+        try:
+            assert self._document_repository is not None
+            source = await self._document_repository.get_document(
+                context["source_document_id"], tenant_id,
+            )
+            if source is None:
+                raise DocumentIntegrityError("Batch source document is unavailable")
+            content = await self._file_storage.read(source.storage_uri)
+            if not compare_digest(sha256(content).hexdigest(), source.checksum):
+                raise DocumentIntegrityError("Batch source checksum does not match")
+            inspected = await self._document_processor.inspect(
+                UploadDocument(None, source.mime_type, content), self._limits,
+            )
+            source_images = await self._document_processor.to_vision_images(
+                content, inspected, self._limits,
+            )
+            result = await self._raw_ocr_providers[0].observe_raw(source_images)
+            if result.status is not OCRProviderStatus.AVAILABLE:
+                return result
+            selected: list[RawOCRObservation] = []
+            heights: list[float] = []
+            excluded = 0
+            for observation in result.observations:
+                box = observation.bounding_box
+                if box is None or observation.page_number > len(source_images):
+                    excluded += 1
+                    continue
+                source_image = source_images[observation.page_number - 1]
+                matches = []
+                for index, region in enumerate(context["regions"]):
+                    if region["page_number"] != observation.page_number:
+                        continue
+                    bounds = (
+                        region["left"] * source_image.width,
+                        region["top"] * source_image.height,
+                        region["right"] * source_image.width,
+                        region["bottom"] * source_image.height,
+                    )
+                    if not (bounds[0] <= box[0] < box[2] <= bounds[2]
+                            and bounds[1] <= box[1] < box[3] <= bounds[3]):
+                        continue
+                    matches.append((index, bounds))
+                ambiguous = any(
+                        other["page_number"] == observation.page_number
+                        and other["left"] * source_image.width < box[2]
+                        and box[0] < other["right"] * source_image.width
+                        and other["top"] * source_image.height < box[3]
+                        and box[1] < other["bottom"] * source_image.height
+                        for other in context["other_regions"]
+                )
+                if len(matches) != 1 or ambiguous:
+                    excluded += 1
+                    continue
+                index, bounds = matches[0]
+                target = images[index]
+                scale_x = target.width / (bounds[2] - bounds[0])
+                scale_y = target.height / (bounds[3] - bounds[1])
+                selected.append(replace(
+                    observation,
+                    source_id=f"{observation.source_id}:batch-region:{index + 1}",
+                    page_number=index + 1,
+                    bounding_box=(
+                        (box[0] - bounds[0]) * scale_x,
+                        (box[1] - bounds[1]) * scale_y,
+                        (box[2] - bounds[0]) * scale_x,
+                        (box[3] - bounds[1]) * scale_y,
+                    ),
+                ))
+                heights.append(box[3] - box[1])
+            _LOGGER.info("batch_source_ocr_filter", extra={
+                "document_id": child_document_id,
+                "included_count": len(selected), "excluded_count": excluded,
+                "median_text_height_px": median(heights) if heights else None,
+            })
+            return RawOCRResult(status=OCRProviderStatus.AVAILABLE,
+                                observations=tuple(selected))
+        except Exception as exc:
+            _LOGGER.warning("batch_source_ocr_unavailable", extra={
+                "document_id": child_document_id,
+                "error_type": type(exc).__name__,
+            })
+            return RawOCRResult(status=OCRProviderStatus.UNAVAILABLE,
+                                anomalies=("batch_source_ocr_unavailable",))
 
     async def _observe_legacy_ocr_traced(
         self,
@@ -315,6 +477,7 @@ class VisionExtractionService(Generic[InvoiceT]):
         result: ExtractionResult[InvoiceT],
         legacy_ocr_task: asyncio.Task[tuple[OCRFieldObservation, ...]] | None,
         raw_ocr_tasks: Sequence[asyncio.Task[RawOCRResult]],
+        source_ocr_task: asyncio.Task[RawOCRResult] | None = None,
         tenant_id: str,
         document_id: str,
         images: Sequence[VisionImage] = (),
@@ -333,9 +496,13 @@ class VisionExtractionService(Generic[InvoiceT]):
             )
         result = replace(result, ocr_observations=legacy_observations)
 
-        if not raw_ocr_tasks:
+        if not raw_ocr_tasks and source_ocr_task is None:
             return result
         raw_results = tuple(await asyncio.gather(*raw_ocr_tasks))
+        if source_ocr_task is not None:
+            source_result = await source_ocr_task
+            if source_result.status is OCRProviderStatus.AVAILABLE:
+                raw_results = (*raw_results, source_result)
         if persist_artifacts and self._artifact_service is not None:
             try:
                 await self._artifact_service.store_ocr(

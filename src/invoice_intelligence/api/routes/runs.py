@@ -18,6 +18,14 @@ from invoice_intelligence.api.schemas.workflows import (
 router = APIRouter(prefix="/runs", tags=["runs"])
 
 
+@router.get("", response_model=list[ExtractionRunResponse], responses=STANDARD_ERROR_RESPONSES)
+async def list_runs(
+    service: ExtractionWorkflowServiceDependency,
+    context: TrustedTenantContextDependency,
+) -> list[ExtractionRunResponse]:
+    return [present_run(run) for run in await service.list_recent_runs(context.tenant_id, context.actor_id)]
+
+
 @router.get(
     "/{run_id}",
     response_model=ExtractionRunResponse,

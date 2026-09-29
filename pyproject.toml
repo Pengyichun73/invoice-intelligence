@@ -105,3 +105,4 @@ files = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+cache_dir = "pytest_cache/.pytest_cache"

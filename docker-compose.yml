@@ -115,6 +115,28 @@ services:
     volumes: [invoice_documents:/var/lib/invoice-intelligence/documents, ./logs:/app/logs]
     healthcheck: {test: [CMD, python, -m, invoice_intelligence.workers.runtime_health, --worker-id-env, INVOICE_INTELLIGENCE_EXTRACTION_WORKER_ID], interval: 15s, timeout: 5s, retries: 3}
     deploy: {resources: {limits: {cpus: "2.0", memory: 2G}}}
+  invoice-segmentation-worker:
+    build: {context: ., dockerfile: Dockerfile}
+    profiles: [core]
+    restart: unless-stopped
+    command: [python, -m, invoice_intelligence.workers.invoice_segmentation]
+    env_file: [.env]
+    environment:
+      <<: *business-db-env
+      INVOICE_INTELLIGENCE_CHECKPOINT_BACKEND: postgres
+      INVOICE_INTELLIGENCE_POSTGRES_CHECKPOINT_DSN: "postgresql://${POSTGRES_CHECKPOINT_USER:?set POSTGRES_CHECKPOINT_USER}@postgres-checkpoint:5432/${POSTGRES_CHECKPOINT_DB:?set POSTGRES_CHECKPOINT_DB}"
+      INVOICE_INTELLIGENCE_POSTGRES_CHECKPOINT_PASSWORD_FILE: /run/secrets/postgres_checkpoint_password
+      INVOICE_INTELLIGENCE_EXTRACTION_ASYNC_ENABLED: "true"
+      INVOICE_INTELLIGENCE_FILE_STORAGE_BACKEND: ${FILE_STORAGE_BACKEND:-local}
+      INVOICE_INTELLIGENCE_FILE_STORAGE_ROOT: /var/lib/invoice-intelligence/documents
+      INVOICE_INTELLIGENCE_OBJECT_STORAGE_ENDPOINT_URL: ${OBJECT_STORAGE_ENDPOINT_URL:-http://object-storage:9000}
+      INVOICE_INTELLIGENCE_OBJECT_STORAGE_ACCESS_KEY: ${OBJECT_STORAGE_APP_ACCESS_KEY:-${MINIO_ROOT_USER:-}}
+      INVOICE_INTELLIGENCE_OBJECT_STORAGE_SECRET_KEY_FILE: /run/secrets/object_storage_app_secret_key
+    depends_on: {postgres: {condition: service_healthy}, postgres-checkpoint: {condition: service_healthy}, migration: {condition: service_completed_successfully}}
+    secrets: [postgres_business_password, postgres_checkpoint_password, object_storage_app_secret_key]
+    volumes: [invoice_documents:/var/lib/invoice-intelligence/documents, ./logs:/app/logs]
+    healthcheck: {test: [CMD, python, -m, invoice_intelligence.workers.runtime_health], interval: 15s, timeout: 5s, retries: 3}
+    deploy: {resources: {limits: {cpus: "2.0", memory: 2G}}}
   memory-admission:
     build: {context: ., dockerfile: Dockerfile}
     profiles: [core, auth]

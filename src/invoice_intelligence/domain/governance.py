@@ -22,6 +22,8 @@ class MemoryPermission(StrEnum):
     REBUILD_INDEX = "memory:rebuild_index"
     SUBMIT_FEEDBACK = "memory:submit_feedback"
     READ_EVALUATION = "memory:read_evaluation"
+    SUBMIT_GOLD = "memory:submit_gold"
+    ADJUDICATE_GOLD = "memory:adjudicate_gold"
     GOVERN_FIELD_ALIAS = "memory:govern_field_alias"
     GOVERN_GLOBAL_FIELD_ALIAS = "memory:govern_global_field_alias"
 

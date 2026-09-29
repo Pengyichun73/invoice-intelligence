@@ -1,12 +1,12 @@
 FROM python:3.12-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_DEFAULT_TIMEOUT=120 PIP_RETRIES=10
 WORKDIR /app
 COPY pyproject.toml README.md LICENSE ./
 COPY src ./src
 COPY migrations ./migrations
 COPY alembic.ini ./
-RUN pip install --no-cache-dir .
+RUN --mount=type=cache,target=/root/.cache/pip pip install .
 COPY docker/entrypoint.sh /usr/local/bin/invoice-entrypoint
 RUN chmod 0755 /usr/local/bin/invoice-entrypoint
 ENTRYPOINT ["invoice-entrypoint"]

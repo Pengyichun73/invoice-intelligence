@@ -113,9 +113,10 @@ def prepare_frozen_gold(
             not isinstance(first_actor, str) or not first_actor
             or not isinstance(second_actor, str) or not second_actor
             or first_actor == second_actor
-            or adjudicator != second_actor
+            or not isinstance(adjudicator, str) or not adjudicator
+            or adjudicator in {first_actor, second_actor}
         ):
-            raise ValueError(f"{case_id} requires two distinct trusted reviewers")
+            raise ValueError(f"{case_id} requires three distinct trusted reviewers")
         fields_a, fields_b = _validated_fields(a), _validated_fields(b)
         choices = decision.get("field_choices")
         if not isinstance(choices, dict):

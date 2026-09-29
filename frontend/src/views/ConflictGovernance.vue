@@ -193,7 +193,7 @@ onMounted(refresh)
 
 <style scoped>
 .dialog label + label { margin-top: 12px; }
-.dialog-error { margin-top: 12px; color: #ef9198; font-size: 11px; line-height: 1.5; }
+.dialog-error { margin-top: 12px; color: #ef9198; font-size: 14px; line-height: 1.5; }
 .button-row { justify-content: flex-end; margin-top: 14px; }
 @media (max-width: 640px) {
   .button-row { align-items: stretch; flex-direction: column; }

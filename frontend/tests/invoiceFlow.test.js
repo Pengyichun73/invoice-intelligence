@@ -91,3 +91,19 @@ test('上传和发票提取请求使用独立的 30 秒超时预算', async (con
   assert.equal(requests.length, 2)
   assert.equal(requests.every(({ options }) => options.signal instanceof AbortSignal), true)
 })
+
+test('提取响应丢失后用同一显式幂等键恢复，不创建第二个 Run', async (context) => {
+  const originalFetch = globalThis.fetch
+  context.after(() => { globalThis.fetch = originalFetch })
+  const keys = []
+  globalThis.fetch = async (path, options) => {
+    keys.push(options.headers['Idempotency-Key'])
+    assert.equal(path, '/api/v1/documents/document-1/extract')
+    if (keys.length === 1) throw new TypeError('network down')
+    return response(202, { run_id: 'run-1', document_id: 'document-1', status: 'received' })
+  }
+  await assert.rejects(() => invoiceApi.extract('document-1', 'saved-key'))
+  const run = await invoiceApi.extract('document-1', 'saved-key')
+  assert.deepEqual(keys, ['saved-key', 'saved-key'])
+  assert.equal(run.run_id, 'run-1')
+})

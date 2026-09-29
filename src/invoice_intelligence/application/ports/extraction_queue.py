@@ -31,6 +31,7 @@ class ExtractionQueueRepository(Protocol):
         idempotency_hash: str | None,
         request_hash: str,
         trace_id: str | None,
+        actor_id: str | None = None,
     ) -> ExtractionRunRecord:
         ...
 

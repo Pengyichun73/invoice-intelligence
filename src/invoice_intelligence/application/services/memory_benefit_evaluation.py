@@ -4,7 +4,7 @@ import math
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from invoice_intelligence.application.services.example_retrieval import (
     HybridExampleRetrievalService,
@@ -12,6 +12,7 @@ from invoice_intelligence.application.services.example_retrieval import (
 from invoice_intelligence.application.services.extraction_validation import (
     EvidenceBasedExtractionValidator,
 )
+from invoice_intelligence.application.services.field_semantic_catalog import FieldSemanticCatalog
 from invoice_intelligence.application.services.vision_extraction import VisionExtractionService
 from invoice_intelligence.domain.document import DocumentReference
 from invoice_intelligence.domain.examples import (
@@ -31,6 +32,12 @@ VERSION_KEYS = (
     "schema_version", "model_version", "prompt_version",
     "catalog_version", "index_version",
 )
+
+
+class MemoryBenefitLeakageRepository(Protocol):
+    async def has_indexed_source(
+        self, tenant_id: str, index_version: str, document_checksum: str
+    ) -> bool: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,15 +115,19 @@ class MemoryBenefitEvaluationService:
         extraction_service: VisionExtractionService[InvoiceExtraction],
         validator: EvidenceBasedExtractionValidator,
         example_retrieval: HybridExampleRetrievalService,
+        leakage_repository: MemoryBenefitLeakageRepository,
+        field_semantic_catalog: FieldSemanticCatalog[InvoiceExtraction],
         runtime_versions: Mapping[str, str],
     ) -> None:
-        if set(runtime_versions) != set(VERSION_KEYS) or any(
+        if set(runtime_versions) != {"schema_version", "model_version", "prompt_version"} or any(
             not value.strip() for value in runtime_versions.values()
         ):
-            raise ValueError("Evaluation requires all runtime version bindings")
+            raise ValueError("Evaluation requires configured runtime version bindings")
         self._extraction = extraction_service
         self._validator = validator
         self._retrieval = example_retrieval
+        self._leakage_repository = leakage_repository
+        self._catalog = field_semantic_catalog
         self._runtime_versions = dict(runtime_versions)
 
     async def run_case(
@@ -128,11 +139,21 @@ class MemoryBenefitEvaluationService:
             raise ValueError("Gold case Schema version is not supported")
         if not gold.versions["index_version"].startswith("field-pattern-v1-"):
             raise ValueError("Paired evaluation requires a value-blind index")
-        if gold.versions != self._runtime_versions:
+        if any(gold.versions[key] != value for key, value in self._runtime_versions.items()):
             raise ValueError("Runtime versions differ from frozen gold")
+        definitions = await self._catalog.list_definitions(tenant_id)
+        if (
+            not definitions
+            or definitions[0].catalog_version.value != gold.versions["catalog_version"]
+        ):
+            raise ValueError("Active catalog version differs from frozen gold")
         active_index = await self._retrieval.active_index_version(tenant_id)
         if active_index is None or active_index.value != gold.versions["index_version"]:
             raise ValueError("Active index version differs from frozen gold")
+        if await self._leakage_repository.has_indexed_source(
+            tenant_id, active_index.value, gold.document.checksum
+        ):
+            raise ValueError("Evaluation index contains the tested document checksum")
 
         started = time.perf_counter()
         vision = await self._extraction.extract(
@@ -251,6 +272,20 @@ class MemoryBenefitEvaluationService:
         actual = invoice.model_dump(mode="json")
         expected = gold.invoice.model_dump(mode="json")
         evidence = {item.field_path: item for item in result.field_evidence}
+        clarity = min((page.clarity_score for page in result.page_quality), default=None)
+        image_quality = (
+            "unknown" if clarity is None else
+            "low" if clarity < 0.4 else
+            "medium" if clarity < 0.75 else "high"
+        )
+        outcomes = {item.outcome for item in result.ocr_comparisons}
+        error_category = (
+            "conflict" if outcomes & {
+                OCRComparisonOutcome.CONFLICTING, OCRComparisonOutcome.UNRESOLVED,
+            } else
+            "vision_only" if OCRComparisonOutcome.VISION_ONLY in outcomes else
+            "ocr_only" if OCRComparisonOutcome.OCR_ONLY in outcomes else "none"
+        )
         return {
             "case_id": gold.case_id,
             "variant": variant,
@@ -259,6 +294,9 @@ class MemoryBenefitEvaluationService:
             "template_group": gold.template_group,
             **gold.versions,
             "ocr_healthy": variant == "vision" or bool(result.raw_ocr_observations),
+            "ocr_status": "available" if result.raw_ocr_observations else "unavailable",
+            "image_quality": image_quality,
+            "error_category": error_category,
             "elapsed_ms": round(elapsed_ms, 3),
             "retrieved_example_ids": list(retrieved_ids),
             "fields": {

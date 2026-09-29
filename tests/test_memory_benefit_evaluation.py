@@ -17,6 +17,7 @@ from invoice_intelligence.domain.examples import (
     ReviewedExamplePromptReference,
 )
 from invoice_intelligence.domain.extraction import ExtractionResult, OCRComparisonOutcome
+from invoice_intelligence.domain.field_semantics import FieldSemanticCatalogVersion
 from invoice_intelligence.domain.invoice import InvoiceExtraction
 from invoice_intelligence.domain.workflow import (
     FieldDecision,
@@ -120,12 +121,36 @@ class _Retrieval:
         )
 
 
+class _Leakage:
+    def __init__(self, found: bool = False) -> None:
+        self.found = found
+
+    async def has_indexed_source(self, tenant_id, index_version, document_checksum):
+        return self.found
+
+
+class _Catalog:
+    def __init__(self, version: str = VERSIONS["catalog_version"]) -> None:
+        self.version = version
+
+    async def list_definitions(self, tenant_id):
+        return (type("Definition", (), {
+            "catalog_version": FieldSemanticCatalogVersion(self.version),
+        })(),)
+
+
+RUNTIME_VERSIONS = {
+    key: VERSIONS[key] for key in ("schema_version", "model_version", "prompt_version")
+}
+
+
 @pytest.mark.asyncio
 async def test_three_variants_use_real_extraction_without_persistent_artifacts():
     extraction, retrieval = _Extraction(), _Retrieval()
     service = MemoryBenefitEvaluationService(
         extraction_service=extraction, validator=_Validator(),
-        example_retrieval=retrieval, runtime_versions=VERSIONS,
+        example_retrieval=retrieval, leakage_repository=_Leakage(),
+        field_semantic_catalog=_Catalog(), runtime_versions=RUNTIME_VERSIONS,
     )
     rows = await service.run_case(tenant_id="isolated-tenant", gold=_gold())
     assert [row["variant"] for row in rows] == [
@@ -138,6 +163,9 @@ async def test_three_variants_use_real_extraction_without_persistent_artifacts()
     assert all(call["persist_artifacts"] is False for call in extraction.calls)
     assert retrieval.calls == [False]
     assert rows[2]["retrieved_example_ids"] == ["example-1"]
+    assert rows[1]["image_quality"] == "unknown"
+    assert rows[1]["ocr_status"] == "available"
+    assert rows[1]["error_category"] == "none"
     assert "PRIVATE-INVOICE-ANSWER" not in str(rows)
     assert "PRIVATE-TEXT" not in str(rows)
 
@@ -147,7 +175,8 @@ async def test_ocr_failure_rejects_paired_result():
     extraction = _Extraction(ocr_healthy=False)
     service = MemoryBenefitEvaluationService(
         extraction_service=extraction, validator=_Validator(),
-        example_retrieval=_Retrieval(), runtime_versions=VERSIONS,
+        example_retrieval=_Retrieval(), leakage_repository=_Leakage(),
+        field_semantic_catalog=_Catalog(), runtime_versions=RUNTIME_VERSIONS,
     )
     with pytest.raises(ValueError, match="OCR is unavailable"):
         await service.run_case(tenant_id="isolated-tenant", gold=_gold())
@@ -159,7 +188,8 @@ async def test_index_mismatch_stops_before_provider_calls():
     extraction = _Extraction()
     service = MemoryBenefitEvaluationService(
         extraction_service=extraction, validator=_Validator(),
-        example_retrieval=_Retrieval("other-index"), runtime_versions=VERSIONS,
+        example_retrieval=_Retrieval("other-index"), leakage_repository=_Leakage(),
+        field_semantic_catalog=_Catalog(), runtime_versions=RUNTIME_VERSIONS,
     )
     with pytest.raises(ValueError, match="Active index version"):
         await service.run_case(tenant_id="isolated-tenant", gold=_gold())
@@ -171,6 +201,35 @@ def test_gold_requires_current_image_evidence_and_runtime_versions():
     with pytest.raises(ValueError, match="runtime version"):
         MemoryBenefitEvaluationService(
             extraction_service=_Extraction(), validator=_Validator(),
-            example_retrieval=_Retrieval(), runtime_versions={"schema_version": "3.0.0"},
+            example_retrieval=_Retrieval(), leakage_repository=_Leakage(),
+            field_semantic_catalog=_Catalog(),
+            runtime_versions={"schema_version": "3.0.0"},
         )
     assert gold.invoice.invoice_number == "PRIVATE-INVOICE-ANSWER"
+
+
+@pytest.mark.asyncio
+async def test_same_checksum_index_leak_stops_before_provider_calls():
+    extraction = _Extraction()
+    service = MemoryBenefitEvaluationService(
+        extraction_service=extraction, validator=_Validator(),
+        example_retrieval=_Retrieval(), leakage_repository=_Leakage(True),
+        field_semantic_catalog=_Catalog(), runtime_versions=RUNTIME_VERSIONS,
+    )
+    with pytest.raises(ValueError, match="tested document checksum"):
+        await service.run_case(tenant_id="isolated-tenant", gold=_gold())
+    assert extraction.calls == []
+
+
+@pytest.mark.asyncio
+async def test_catalog_mismatch_stops_before_provider_calls():
+    extraction = _Extraction()
+    service = MemoryBenefitEvaluationService(
+        extraction_service=extraction, validator=_Validator(),
+        example_retrieval=_Retrieval(), leakage_repository=_Leakage(),
+        field_semantic_catalog=_Catalog("other-catalog"),
+        runtime_versions=RUNTIME_VERSIONS,
+    )
+    with pytest.raises(ValueError, match="Active catalog version"):
+        await service.run_case(tenant_id="isolated-tenant", gold=_gold())
+    assert extraction.calls == []

@@ -22,6 +22,8 @@ from invoice_intelligence.config.logging import safe_failure_fields
 _LOGGER = logging.getLogger(__name__)
 _IDENTITY_HEADERS = frozenset({"x-tenant-id", "tenant-id", "x-reviewer-id", "reviewer-id"})
 _RULES: tuple[tuple[str, re.Pattern[str], Permission], ...] = (
+    ("POST", re.compile(r"^/invoice-batches(?:/.*)?$"), Permission.DOCUMENT_EXTRACT),
+    ("GET", re.compile(r"^/invoice-batches/[^/]+(?:/files/[^/]+/pages/[0-9]+)?$"), Permission.DOCUMENT_READ),
     ("GET", re.compile(r"^/accounting(?:/.*)?$"), Permission.ACCOUNTING_READ),
     ("POST", re.compile(r"^/accounting/candidates/[^/]+/post$"), Permission.ACCOUNTING_POST),
     ("POST", re.compile(r"^/accounting(?:/.*)?$"), Permission.ACCOUNTING_GOVERN),

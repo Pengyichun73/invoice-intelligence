@@ -258,6 +258,7 @@ class Settings(BaseSettings):
     object_storage_originals_bucket: str = "invoice-originals"
     object_storage_rendered_bucket: str = "invoice-rendered"
     object_storage_derived_text_bucket: str = "invoice-derived-text"
+    memory_gold_bucket: str | None = None
     object_storage_tenant_hmac_key: SecretStr = SecretStr("development-storage-hmac-key")
     object_storage_tls_verify: bool = True
     object_storage_presign_ttl_seconds: int = Field(default=300, gt=0, le=3600)

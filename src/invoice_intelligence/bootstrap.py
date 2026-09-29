@@ -50,6 +50,7 @@ from invoice_intelligence.application.services.document_artifacts import Documen
 from invoice_intelligence.application.services.document_ingestion import (
     DocumentIngestionService,
 )
+from invoice_intelligence.application.services.invoice_batches import InvoiceBatchService
 from invoice_intelligence.application.services.evaluation_execution import (
     ALL_EVALUATION_VARIANTS,
     ConfiguredEvaluationVariantExecutor,
@@ -91,6 +92,14 @@ from invoice_intelligence.application.services.memory_admission import (
     MemoryAdmissionPolicyConfig,
     MemoryAdmissionService,
 )
+from invoice_intelligence.application.services.memory_benefit_batch import MemoryBenefitBatchService
+from invoice_intelligence.application.services.memory_benefit_evaluation import (
+    MemoryBenefitEvaluationService,
+)
+from invoice_intelligence.application.services.memory_effectiveness import (
+    MemoryEffectivenessService,
+)
+from invoice_intelligence.application.services.memory_gold import MemoryGoldService
 from invoice_intelligence.application.services.memory_governance import (
     MemoryGovernanceService,
 )
@@ -123,50 +132,58 @@ from invoice_intelligence.application.services.transaction_rules import MockTran
 from invoice_intelligence.application.services.vision_extraction import (
     VisionExtractionService,
 )
+from invoice_intelligence.code_harness.application.ports.code_index import CodeIndex
+from invoice_intelligence.code_harness.application.ports.code_model import CodeModel
+from invoice_intelligence.code_harness.application.ports.facts import HarnessFactRepository
+from invoice_intelligence.code_harness.application.ports.parser import CodeParser
+from invoice_intelligence.code_harness.application.ports.postmortem import PostmortemRepository
+from invoice_intelligence.code_harness.application.ports.sandbox import (
+    SandboxExecutor,
+    SandboxPolicy,
+)
+from invoice_intelligence.code_harness.application.ports.source_registry import (
+    HarnessSourceRegistry,
+)
+from invoice_intelligence.code_harness.application.ports.task_repository import (
+    HarnessTaskRepository,
+)
 from invoice_intelligence.code_harness.application.services.code_harness import CodeHarnessService
 from invoice_intelligence.code_harness.application.services.postmortem_governance import (
     PostmortemGovernanceService,
+)
+from invoice_intelligence.code_harness.application.services.repository_inspection import (
+    RepositoryInspectionService,
 )
 from invoice_intelligence.code_harness.application.services.worker import (
     HarnessWorkerConfig,
     HarnessWorkerService,
 )
-from invoice_intelligence.code_harness.application.ports.code_index import CodeIndex
-from invoice_intelligence.code_harness.application.ports.code_model import CodeModel
-from invoice_intelligence.code_harness.application.ports.facts import HarnessFactRepository
-from invoice_intelligence.code_harness.application.ports.parser import CodeParser
-from invoice_intelligence.code_harness.application.ports.sandbox import SandboxExecutor, SandboxPolicy
-from invoice_intelligence.code_harness.application.ports.postmortem import PostmortemRepository
-from invoice_intelligence.code_harness.application.ports.source_registry import (
-    HarnessSourceRegistry,
-)
-from invoice_intelligence.code_harness.application.ports.task_repository import HarnessTaskRepository
-from invoice_intelligence.code_harness.application.services.repository_inspection import (
-    RepositoryInspectionService,
-)
 from invoice_intelligence.code_harness.domain.repository import RepositorySource
+from invoice_intelligence.code_harness.infrastructure.indexing.snapshot_index import (
+    SnapshotCodeIndex,
+)
 from invoice_intelligence.code_harness.infrastructure.observability.metrics import (
     MetricsHarnessObservability,
 )
 from invoice_intelligence.code_harness.infrastructure.observability.privacy import (
     PrivacyTelemetryHarnessObservability,
 )
-from invoice_intelligence.code_harness.infrastructure.indexing.snapshot_index import (
-    SnapshotCodeIndex,
-)
-from invoice_intelligence.code_harness.infrastructure.parsing.python_ast import PythonAstParser
 from invoice_intelligence.code_harness.infrastructure.parsing.grammar_registry import (
     GrammarRegistration,
     GrammarRegistry,
 )
-from invoice_intelligence.code_harness.infrastructure.persistence.sqlalchemy_postmortems import (
-    SQLAlchemyPostmortemRepository,
-)
+from invoice_intelligence.code_harness.infrastructure.parsing.python_ast import PythonAstParser
 from invoice_intelligence.code_harness.infrastructure.persistence.sqlalchemy_facts import (
     SQLAlchemyHarnessFactRepository,
 )
+from invoice_intelligence.code_harness.infrastructure.persistence.sqlalchemy_postmortems import (
+    SQLAlchemyPostmortemRepository,
+)
 from invoice_intelligence.code_harness.infrastructure.persistence.sqlalchemy_sources import (
     SQLAlchemyHarnessSourceRegistry,
+)
+from invoice_intelligence.code_harness.infrastructure.persistence.sqlalchemy_tasks import (
+    SQLAlchemyHarnessTaskRepository,
 )
 from invoice_intelligence.code_harness.infrastructure.sandbox.fail_closed import (
     FailClosedSandboxExecutor,
@@ -187,9 +204,6 @@ from invoice_intelligence.domain.extraction import PromptContextBudget
 from invoice_intelligence.domain.field_semantics import FieldSemanticCatalogVersion
 from invoice_intelligence.domain.invoice import InvoiceExtraction
 from invoice_intelligence.domain.storage import ObjectKind
-from invoice_intelligence.code_harness.infrastructure.persistence.sqlalchemy_tasks import (
-    SQLAlchemyHarnessTaskRepository,
-)
 from invoice_intelligence.infrastructure.accounting.mock import (
     MockAccountingPostingProvider,
     MockExchangeRateProvider,
@@ -210,6 +224,8 @@ from invoice_intelligence.infrastructure.corrections.scopes import (
 from invoice_intelligence.infrastructure.documents.processor import (
     PillowMuPdfDocumentProcessor,
 )
+from invoice_intelligence.infrastructure.qwen.invoice_segmentation import QwenInvoiceSegmentationProvider
+from invoice_intelligence.infrastructure.persistence.sqlalchemy_invoice_batches import SQLAlchemyInvoiceBatchRepository
 from invoice_intelligence.infrastructure.documents.quality import PillowImageQualityAnalyzer
 from invoice_intelligence.infrastructure.embeddings.openai import OpenAIEmbeddingProvider
 from invoice_intelligence.infrastructure.evaluation.http_runner import (
@@ -255,6 +271,9 @@ from invoice_intelligence.infrastructure.persistence.sqlalchemy_evaluation_jobs 
 from invoice_intelligence.infrastructure.persistence.sqlalchemy_examples import (
     SQLAlchemyReviewedExampleRepository,
 )
+from invoice_intelligence.infrastructure.persistence.sqlalchemy_extraction_queue import (
+    SQLAlchemyExtractionQueueRepository,
+)
 from invoice_intelligence.infrastructure.persistence.sqlalchemy_field_semantic_index import (
     SQLAlchemyFieldSemanticProjectionRepository,
 )
@@ -264,6 +283,16 @@ from invoice_intelligence.infrastructure.persistence.sqlalchemy_field_semantics 
 )
 from invoice_intelligence.infrastructure.persistence.sqlalchemy_governance import (
     SQLAlchemyMemoryGovernanceRepository,
+)
+from invoice_intelligence.infrastructure.persistence.sqlalchemy_memory_benefit_results import (
+    SQLAlchemyMemoryBenefitResultRepository,
+)
+from invoice_intelligence.infrastructure.persistence.sqlalchemy_memory_effectiveness import (
+    SQLAlchemyMemoryBenefitLeakageRepository,
+    SQLAlchemyMemoryEffectivenessRepository,
+)
+from invoice_intelligence.infrastructure.persistence.sqlalchemy_memory_gold import (
+    SQLAlchemyMemoryGoldRepository,
 )
 from invoice_intelligence.infrastructure.persistence.sqlalchemy_model_training import (
     SQLAlchemyModelTrainingRepository,
@@ -276,9 +305,6 @@ from invoice_intelligence.infrastructure.persistence.sqlalchemy_promotion_eviden
 )
 from invoice_intelligence.infrastructure.persistence.sqlalchemy_repository import (
     SQLAlchemyBusinessRepository,
-)
-from invoice_intelligence.infrastructure.persistence.sqlalchemy_extraction_queue import (
-    SQLAlchemyExtractionQueueRepository,
 )
 from invoice_intelligence.infrastructure.persistence.sqlalchemy_review_tasks import (
     SQLAlchemyReviewTaskRepository,
@@ -316,6 +342,7 @@ from invoice_intelligence.infrastructure.serialization.pydantic import (
 )
 from invoice_intelligence.infrastructure.storage.download_access import LocalDownloadAccessIssuer
 from invoice_intelligence.infrastructure.storage.local import LocalFileStorage
+from invoice_intelligence.infrastructure.storage.memory_gold import S3GoldObjectStore
 from invoice_intelligence.infrastructure.storage.s3 import S3DownloadAccessIssuer, S3FileStorage
 from invoice_intelligence.infrastructure.training.artifacts import SafeTrainingArtifactReader
 from invoice_intelligence.infrastructure.training.mlflow_compatible import (
@@ -339,9 +366,11 @@ class ApplicationContainer:
     file_storage: FileStorage
     document_access_service: DocumentAccessService
     document_ingestion_service: DocumentIngestionService
+    invoice_batch_service: InvoiceBatchService
     vision_extraction_service: VisionExtractionService[InvoiceExtraction] | None
     business_repository: SQLAlchemyBusinessRepository
     extraction_queue_repository: SQLAlchemyExtractionQueueRepository
+    invoice_batch_repository: SQLAlchemyInvoiceBatchRepository
     review_task_repository: SQLAlchemyReviewTaskRepository
     accounting_service: AccountingService
     reviewed_example_repository: SQLAlchemyReviewedExampleRepository
@@ -376,6 +405,9 @@ class ApplicationContainer:
     raw_ocr_providers: tuple[RawOCRProvider, ...]
     ocr_comparison_service: DeterministicMultiSourceOCRComparisonService[InvoiceExtraction] | None
     memory_governance_service: MemoryGovernanceService
+    memory_effectiveness_service: MemoryEffectivenessService
+    memory_gold_service: MemoryGoldService | None
+    memory_benefit_batch: MemoryBenefitBatchService | None
     promotion_candidate_service: PromotionCandidateService
     governance_repository: SQLAlchemyMemoryGovernanceRepository
     qwen_client: QwenRemoteClient | None
@@ -432,10 +464,6 @@ def build_container(
         ),
     )
     evaluation_repository = SQLAlchemyEvaluationRepository(business_engine)
-    evaluation_job_service = EvaluationJobService(
-        SQLAlchemyEvaluationJobRepository(business_engine),
-        dataset_repository=evaluation_repository,
-    )
     code_harness_task_repository = SQLAlchemyHarnessTaskRepository(business_engine)
     code_harness_fact_repository = SQLAlchemyHarnessFactRepository(business_engine)
     code_harness_postmortem_repository = SQLAlchemyPostmortemRepository(business_engine)
@@ -625,6 +653,7 @@ def build_container(
     )
     download_issuer: DownloadAccessIssuer
     download_verifier: LocalDownloadAccessIssuer | None
+    gold_store: S3GoldObjectStore | None = None
     if resolved_settings.file_storage_backend == "local":
         file_storage: FileStorage = LocalFileStorage(resolved_settings.file_storage_root)
         local_download_issuer = LocalDownloadAccessIssuer(
@@ -681,6 +710,12 @@ def build_container(
             ),
         )
         s3_storage.validate_startup()
+        if resolved_settings.memory_gold_bucket is not None:
+            gold_store = S3GoldObjectStore(
+                client, resolved_settings.memory_gold_bucket,
+                resolved_settings.object_storage_tenant_hmac_key.get_secret_value().encode("utf-8"),
+            )
+            gold_store.validate_startup()
         file_storage = s3_storage
         download_issuer = S3DownloadAccessIssuer(
             client,
@@ -774,6 +809,15 @@ def build_container(
     memory_conflict_repository = SQLAlchemyMemoryConflictRepository(business_engine)
     reviewer_reliability_repository = SQLAlchemyReviewerReliabilityRepository(business_engine)
     governance_repository = SQLAlchemyMemoryGovernanceRepository(business_engine)
+    memory_effectiveness_service = MemoryEffectivenessService(
+        SQLAlchemyMemoryEffectivenessRepository(business_engine)
+    )
+    memory_gold_service = (
+        MemoryGoldService(
+            business_repository, SQLAlchemyMemoryGoldRepository(business_engine), gold_store
+        )
+        if gold_store is not None else None
+    )
     promotion_candidate_repository = SQLAlchemyPromotionCandidateRepository(business_engine)
     promotion_candidate_service = PromotionCandidateService(
         repository=promotion_candidate_repository,
@@ -1270,6 +1314,7 @@ def build_container(
         )
     else:
         provider = None
+    invoice_batch_repository = SQLAlchemyInvoiceBatchRepository(business_engine)
     if provider is not None:
         extraction_service = VisionExtractionService(
             file_storage=file_storage,
@@ -1286,6 +1331,11 @@ def build_container(
             raw_ocr_providers=resolved_raw_ocr_providers_tuple,
             ocr_comparison_service=ocr_comparison_service,
             targeted_reread_mode=resolved_settings.memory_targeted_reread_mode,
+            batch_repository=invoice_batch_repository,
+            document_repository=business_repository,
+            batch_min_width=resolved_settings.validation_min_width,
+            batch_min_height=resolved_settings.validation_min_height,
+            batch_min_clarity=resolved_settings.validation_min_clarity,
             prompt_context_budget=PromptContextBudget(
                 max_examples_total=resolved_settings.vision_prompt_max_examples_total,
                 max_examples_per_region=(resolved_settings.vision_prompt_max_examples_per_region),
@@ -1339,6 +1389,36 @@ def build_container(
     extraction_validator = EvidenceBasedExtractionValidator(
         validation_policy,
         schema_inspector,
+    )
+    memory_benefit_batch = None
+    if (
+        gold_store is not None
+        and extraction_service is not None
+        and example_retrieval_service is not None
+    ):
+        memory_benefit_batch = MemoryBenefitBatchService(
+            business_repository,
+            SQLAlchemyMemoryGoldRepository(business_engine),
+            gold_store,
+            MemoryBenefitEvaluationService(
+                extraction_service=extraction_service,
+                validator=extraction_validator,
+                example_retrieval=example_retrieval_service,
+                leakage_repository=SQLAlchemyMemoryBenefitLeakageRepository(business_engine),
+                field_semantic_catalog=field_semantic_catalog,
+                runtime_versions={
+                    "schema_version": resolved_settings.invoice_schema_version,
+                    "model_version": vision_model_version.value,
+                    "prompt_version": resolved_settings.vision_prompt_version,
+                },
+            ),
+            SQLAlchemyMemoryBenefitResultRepository(business_engine),
+        )
+    evaluation_job_service = EvaluationJobService(
+        SQLAlchemyEvaluationJobRepository(business_engine),
+        dataset_repository=evaluation_repository,
+        gold_repository=SQLAlchemyMemoryGoldRepository(business_engine),
+        memory_benefit_batch=memory_benefit_batch,
     )
     memory_admission_policy = DeterministicMemoryAdmissionPolicy(
         MemoryAdmissionPolicyConfig(
@@ -1426,14 +1506,37 @@ def build_container(
         if type(adapter) in BUILTIN_PROVIDER_CAPABILITIES:
             require_builtin_capability(adapter, ProviderCapability.OCR_OBSERVATION)
 
+    batch_detector = (
+        QwenInvoiceSegmentationProvider(
+            qwen_client, qwen_payload_guard, resolved_settings.qwen_vision_model,
+        )
+        if qwen_client is not None and qwen_payload_guard is not None
+        and resolved_settings.vision_provider == "qwen"
+        else None
+    )
+    invoice_batch_service = InvoiceBatchService(
+        invoice_batch_repository,
+        ingestion_service, business_repository, file_storage,
+        document_processor, limits, batch_detector,
+        ExtractionWorkflowService(
+            None, business_repository, business_repository, business_repository,
+            extraction_queue=extraction_queue_repository,
+        ),
+        raw_ocr=resolved_raw_ocr_provider,
+        min_width=resolved_settings.validation_min_width,
+        min_height=resolved_settings.validation_min_height,
+        min_clarity=resolved_settings.validation_min_clarity,
+    )
     return ApplicationContainer(
         settings=resolved_settings,
         file_storage=file_storage,
         document_access_service=document_access_service,
         document_ingestion_service=ingestion_service,
+        invoice_batch_service=invoice_batch_service,
         vision_extraction_service=extraction_service,
         business_repository=business_repository,
         extraction_queue_repository=extraction_queue_repository,
+        invoice_batch_repository=invoice_batch_repository,
         review_task_repository=review_task_repository,
         accounting_service=accounting_service,
         reviewed_example_repository=reviewed_example_repository,
@@ -1470,6 +1573,9 @@ def build_container(
         raw_ocr_providers=resolved_raw_ocr_providers_tuple,
         ocr_comparison_service=ocr_comparison_service,
         memory_governance_service=memory_governance_service,
+        memory_effectiveness_service=memory_effectiveness_service,
+        memory_gold_service=memory_gold_service,
+        memory_benefit_batch=memory_benefit_batch,
         promotion_candidate_service=promotion_candidate_service,
         governance_repository=governance_repository,
         qwen_client=qwen_client,
@@ -1563,7 +1669,8 @@ def build_harness_worker_service(
 
 
 def build_evaluation_worker_service(
-    engine: Engine, settings: Settings
+    engine: Engine, settings: Settings,
+    *, memory_benefit_batch: MemoryBenefitBatchService | None = None,
 ) -> tuple[EvaluationJobService, SQLAlchemyEvaluationJobRepository]:
     """仅在隔离 Runner 凭据完整时启用 Suite 执行；报告写入 PostgreSQL。"""
 
@@ -1571,7 +1678,7 @@ def build_evaluation_worker_service(
     if settings.evaluation_runner_endpoint is None:
         if settings.evaluation_runner_token_file:
             raise ValueError("Evaluation Runner configuration is incomplete")
-        return EvaluationJobService(jobs), jobs
+        return EvaluationJobService(jobs, memory_benefit_batch=memory_benefit_batch), jobs
     if settings.evaluation_runner_token_file is None:
         raise ValueError("Evaluation Runner requires a token file")
     token = settings.evaluation_runner_token_file.read_text(encoding="utf-8").strip()
@@ -1599,6 +1706,7 @@ def build_evaluation_worker_service(
         jobs,
         dataset_repository=dataset_repository,
         suite_evaluation=suite_evaluation,
+        memory_benefit_batch=memory_benefit_batch,
         suite_run_timeout_seconds=settings.evaluation_suite_timeout_seconds,
     )
     return service, jobs

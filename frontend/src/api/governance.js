@@ -90,6 +90,13 @@ export const governanceApi = {
     timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
     ...options,
   }),
+  effectivenessOverview: (params, options = {}) => get(`${memory}/effectiveness/overview`, params, options),
+  effectivenessStages: (params, options = {}) => get(`${memory}/effectiveness/stages`, params, options),
+  effectivenessScenarios: (params, options = {}) => get(`${memory}/effectiveness/scenarios`, params, options),
+  effectivenessRun: (id, options = {}) => get(`${memory}/effectiveness/runs/${encodeURIComponent(id)}`, undefined, options),
+  goldCase: (documentId) => get(`${memory}/gold/${encodeURIComponent(documentId)}`),
+  submitGoldAnnotation: (documentId, body) => write(`${memory}/gold/${encodeURIComponent(documentId)}/annotations`, { body }),
+  createMemoryBenefitJob: (documentIds) => write(`${evaluations}/memory-benefit-jobs`, { body: { document_ids: documentIds } }),
   audits: (params, options = {}) => get(`${memory}/audits`, params, {
     timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
     ...options,

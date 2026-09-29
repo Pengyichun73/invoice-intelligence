@@ -8,7 +8,7 @@ services:
       INVOICE_INTELLIGENCE_OIDC_JWKS_URL: http://keycloak:8080/realms/invoice-acceptance/protocol/openid-connect/certs
       INVOICE_INTELLIGENCE_OIDC_CLIENT_ID: invoice-intelligence-console
       INVOICE_INTELLIGENCE_MILVUS_URI: http://milvus:19530
-    ports: !override ["127.0.0.1:18000:8000"]
+    ports: !override ["127.0.0.1:8000:8000"]
   extraction-worker:
     environment:
       INVOICE_INTELLIGENCE_MILVUS_URI: http://milvus:19530
@@ -33,6 +33,6 @@ services:
     volumes:
       - ./deploy/keycloak/invoice-acceptance-realm.json:/opt/keycloak/data/import/invoice-acceptance-realm.json:ro
   object-storage:
-    ports: !override ["127.0.0.1:19000:9000", "127.0.0.1:19001:9001"]
+    ports: !override ["127.0.0.1:9000:9000", "127.0.0.1:9001:9001"]
   reverse-proxy:
     ports: !override ["127.0.0.1:18443:8443"]

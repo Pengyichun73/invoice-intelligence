@@ -1,5 +1,34 @@
 # Architecture
 
+## 多票批次边界（待隔离验收）
+
+`invoice_batches`、`invoice_batch_files` 和 `invoice_batch_items` 只保存批次、原件、
+票据区域/跨页归属及子 Run 引用，不改变固定的 `InvoiceExtraction`。API Router 仅调用
+`InvoiceBatchService`；分段 Worker 使用 PostgreSQL claim/lease/fencing 和既有
+DocumentProcessor、OCR、Qwen 视觉 Provider。分段提供当前图片的区域建议，不提供字段值。
+全部源文件边界确定且合计不超过五票后，按票据区域生成独立子 Document 并复用现有
+ExtractionWorkflowService 的异步队列。原始审核事实仍属于单票 Run；跨页同字段 OCR
+候选不一致由既有确定性 Validator 路由到人工审核。源页区域保存在 PostgreSQL，前端
+仅在受信租户内预览原件。子票从原始图片或 PDF clip 生成；PDF clip 质量不足时最多
+重渲染一次至 300 DPI，仍受像素预算限制。子 Document 与源区域在 Run 入队前持久化，
+原生尺寸用于质量校验，低质场景的整页 OCR 只采纳唯一落入当前票据区域的文字框。
+这些 OCR 观察仅供比对，不能越过当前图片证据自动确认字段。该代码链路尚待同页多票、
+跨页归并、低质票据和故障恢复的真实发票隔离实测。
+`GET /api/v1/invoice-batches/{batch_id}` 按可信租户返回批次和各票 Run 引用；前端
+允许在会话结束后输入批次编号重新读取，不持久化发票结果到浏览器存储。
+`GET /api/v1/runs` 与 `GET /api/v1/invoice-batches` 各返回最多 30 条当前可信
+actor 创建的单票 Run 或批次，按 `created_at` 倒序；批次子票 Run 不进入单票列表。
+创建人写在 PostgreSQL `created_by`，来自认证上下文而非请求参数。旧记录缺少
+创建人时仅保留按 ID 查询能力，不进行不可靠的历史归属回填。
+批次创建事务先写入 `open`，上传和提交随后更新批次阶段。`dispatched` 后子 Run
+状态各自由 PostgreSQL 保存；批次查询在读取时汇总为当前可见状态，避免复制一套
+可能与子 Run 不一致的终态。前端最近批次列表定期重读此状态。
+
+应用镜像的 pip 依赖下载使用 BuildKit 缓存挂载和有限网络重试；缓存仅属于构建环境，不进入运行镜像。
+
+pytest 缓存由 `pyproject.toml` 的 `cache_dir` 统一放在
+`pytest_cache/.pytest_cache`；pytest 创建缓存时的临时目录位于同一父目录。
+
 ## Code Generation and Self-Healing Harness
 
 Harness 采用独立的确定性 Application 状态机，不新增 LangGraph、Agent Graph 或开放式 Agent Loop，
@@ -82,7 +111,9 @@ main            -> api + bootstrap + config (process entry/lifespan only)
 
 ## Authentication and authorization
 
-隔离验收使用 `compose.acceptance.yml` 中独立 Keycloak realm `invoice-acceptance`。
+本地开发使用 `docker-compose.yml` 与 `compose.local-oidc.yml` 组成的单一
+`invoice-intelligence` 项目。迁移后的 Keycloak realm 仍名为 `invoice-acceptance`；
+这是 issuer 的稳定标识，不代表另有独立 Docker 项目。
 浏览器端采用 Authorization Code + PKCE，令牌仅保留在会话存储；API 仍通过
 `OIDCJWTAuthContextProvider` 校验签名和 claim，并以既有 RBAC 决定权限。
 OIDC 模式禁止缺少 Bearer Token 时回退到固定 `local-developer` 身份。
@@ -113,8 +144,21 @@ JWKS 只导入允许算法的签名密钥，忽略同一文档中的加密密钥
 `field-pattern-v1-` 索引版本时派生 Milvus 投影不含历史字段值，审核事实仍只在 PostgreSQL。
 OCR 当前页唯一绑定区域可触发一次受限裁剪重读，默认 `off`，`shadow` 不改结果，`apply`
 须再通过当前证据核对、OCR 重比较和原确定性 Validator。该代码入口尚未通过真实样本收益
-验收，生产路由不得启用。隔离标注 JSONL 的身份字段只是声明，不替代 OIDC/RBAC 审计。
-生产目标暂为独立 Linux 单机，异机加密备份未就绪前禁止生产灰度。
+验收，生产路由不得启用。离线标注 JSONL 的身份字段只是声明，不替代 OIDC/RBAC 审计；
+新增的后端三人标注 API 从可信上下文读取标注人/裁决人身份，第三人必须与前两人不同。
+完整 19 字段和当前图片证据写入专用私有 S3/MinIO 对象，PostgreSQL 只保存
+文档归属、三人身份、版本、对象引用、checksum、逐字段 `first/second` 裁决选择和冻结事实。
+专用 Bucket 未配置时接口拒绝写入。
+标注对象、PostgreSQL 冻结事实与评估索引仍需真实隔离验收。
+效果查询由只读 `MemoryEffectivenessService -> MemoryEffectivenessRepository` 读取同租户
+审核、准入、当前合格投影、召回 Trace 和 Evaluation Job；配对收益独立读取
+`memory_benefit_runs`。API Router 不接触 ORM。`insufficient_evidence` 不因召回或索引数量
+变为收益结论。冻结文档通过现有 Evaluation Job claim/lease 队列调用三变体；结果与逐字段
+脱敏判定写入 PostgreSQL `memory_benefit_runs` 和 `memory_benefit_judgments`，按字段、
+模板组、图片质量、OCR 状态和受控错误类别汇总，Job 完成时
+再次核对租户、数据集摘要和版本。相关 migration 为 `0046` 至 `0049`，尚未在目标库执行；
+重读持久证据也未接入。目前只有本机 MinIO，独立异机 MinIO 加密备份与恢复演练未完成，
+禁止生产灰度和 `apply`。
 
 隔离 Compose 的 HTTP API 只在业务 PostgreSQL 同一事务登记 `extraction_runs` 与
 `extraction_work_items`，立即返回 `received` 和 `run_id`。独立 `extraction-worker` 通过
@@ -225,12 +269,11 @@ OCR 是 application port，Composition Root 在显式启用时构造 Infrastruct
 Checkpoint 仅保留字段候选、来源引用、页码、位置、未校准分数和原因码等技术摘要，不保存图片、
 Base64、完整 OCR 响应或原始行文本，也不把技术元数据写入 `InvoiceExtraction`。
 
-隔离 Compose 的 `compose.ocr-gpu.yml` 可单独部署 GPU OCR，沿用版本化 YAML、`gpu:0`
-和容器内 8077；Worker 通过 `http://ocr:8077` 调用，不向主机发布 OCR 端口。
-未启用覆盖文件时保持 `http://host.docker.internal:8077`，以兼容现有宿主 PaddleX。
-`scripts/manage-acceptance.ps1` 负责选择一种路径及统一启动/停止 API、Worker 和依赖；
-不能同时运行两份 GPU OCR。Docker 镜像使用官方 PaddleX 基础镜像并升级到项目固定的
-PaddleX/PaddleOCR 版本；新镜像尚须现场构建及 OCR 文本框验收，配置存在不等于服务可用。
+统一开发脚本只使用宿主 PaddleX `127.0.0.1:8077`，可后台启动并校验 `/ocr` 契约；
+提取 Worker 通过 `http://host.docker.internal:8077` 调用。
+`scripts/manage-intelligence.ps1` 管理 Docker API/Worker/依赖及本地 OCR；可选托管 Vite 前端。
+仅对已记录并核对进程身份的本机进程执行停止，不构建或启动 Docker OCR。
+项目不再提供 Docker OCR 镜像构建或 Compose OCR 服务配置。
 
 本地 PaddleOCR 运行基线固定为独立 `.venv-ocr`、`gpu:0`、回环地址
 `http://127.0.0.1:8188`、PP-OCRv6 Small 检测/识别模型及版本化 Pipeline 配置
@@ -1200,9 +1243,17 @@ Run 字段弹窗只读现有租户授权的提取结果和准入列表，不生�
 API Client 通过并发计数向 App Shell 发布真实 HTTP 活动，顶部不确定进度条不得解释为 Workflow、
 Worker 或 Milvus 投影进度。全局通知只消费前端白名单错误文案和受信 `X-Trace-ID`，不展示后端任意
 `message/detail`、完整 payload 或远程响应体。网络失败、429、503 造成写结果不确定时，相同方法、
-路径和语义请求在当前页面生命周期内复用内存中的 `Idempotency-Key`；Key 不进入日志、通知或持久化。
+路径和语义请求复用 `Idempotency-Key`；提取请求在当前浏览器会话内额外保存文档 ID 和原 Key，
+以便刷新后续接同一请求。Key 不进入日志或通知；其他治理写入的 Key 仍仅保存在内存中。
 409 后页面清除陈旧快照并重新读取权威状态与 revision；写成功而刷新失败时保留成功事实，只提供
 “重新读取”动作，不重复发起治理写请求。
+
+“记忆效果”视图调用独立的 effectiveness 四个只读接口，将文档、审核、准入、投影和召回的
+运行状态与配对收益分开展示。`insufficient_evidence` 不渲染改善结论；场景指标只相对
+`Vision+OCR` 基线展示。旧 Suite 评估继续使用 `evaluation_run_id`。Gold 状态和独立标注
+仅在前端启用 `VITE_MEMORY_GOLD_ENABLED=true` 后显示，后端仍由可信 OIDC 身份授权，
+Bucket 缺失时明确提示 503；当前后端不返回两名标注者的逐字段
+分歧，因此前端不提供盲目裁决操作。配对任务入口只登记后台 Job，不表示收益已形成。
 
 App Shell 使用内置视图白名单维护 Hash 与浏览器历史，页面切换后更新标题并把焦点移动到主标题。
 治理对话框限制键盘焦点，提交期间禁止 Esc/遮罩关闭，结束后恢复触发控件焦点。所有过渡均支持
@@ -1348,6 +1399,7 @@ Collection 的租户、版本、ID 与 projection checksum，并与 PostgreSQL �
 记忆收益逐样本评估由 `MemoryBenefitEvaluationService` 调用既有视觉提取、OCR、
 值盲案例检索和确定性 Validator；不写业务 Run、渲染/OCR 产物或检索 Trace。
 冻结真值必须覆盖当前图片的 19 字段，并与文档 checksum、运行版本及活动值盲索引一致。
-该服务只产出脱敏配对判定，尚未连接隔离批量调度或真实标注数据，不能作为生产晋升证据。
+该服务只产出脱敏配对判定，已接入现有 Evaluation Job 队列和持久化结果仓储；
+缺少完整冻结真值、活动值盲索引或独立隔离验收时不能作为生产晋升证据。
 后续模块化执行提示词见 [`codex-next-target-feature-prompt.md`](codex-next-target-feature-prompt.md)；
 它只用于编排验收和缺口修复，不改变架构边界或实体 Schema。

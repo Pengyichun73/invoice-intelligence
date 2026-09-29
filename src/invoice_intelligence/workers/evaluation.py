@@ -4,7 +4,11 @@ import asyncio
 import os
 import signal
 
-from invoice_intelligence.bootstrap import build_evaluation_worker_service
+from invoice_intelligence.bootstrap import (
+    build_container,
+    build_evaluation_worker_service,
+    close_application_container,
+)
 from invoice_intelligence.config.logging import configure_logging
 from invoice_intelligence.config.settings import get_settings
 from invoice_intelligence.infrastructure.observability.metrics import (
@@ -24,7 +28,10 @@ async def _run() -> None:
     if not worker_id:
         raise RuntimeError("Evaluation Worker requires a stable worker ID")
     engine = create_business_engine(dsn)
-    service, repository = build_evaluation_worker_service(engine, settings)
+    container = build_container(settings)
+    service, repository = build_evaluation_worker_service(
+        engine, settings, memory_benefit_batch=container.memory_benefit_batch,
+    )
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for signum in (signal.SIGINT, getattr(signal, "SIGTERM", signal.SIGINT)):
@@ -58,6 +65,7 @@ async def _run() -> None:
                 pass
     finally:
         engine.dispose()
+        await close_application_container(container)
 
 
 def main() -> None:

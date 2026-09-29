@@ -52,6 +52,7 @@ from invoice_intelligence.infrastructure.persistence.sqlalchemy_models import (
     DocumentRow,
     ExtractionResultRow,
     ExtractionRunRow,
+    InvoiceBatchItemRow,
     HumanCorrectionRow,
     IdempotencyRequestRow,
     MemoryReviewRecoveryRow,
@@ -115,6 +116,26 @@ class SQLAlchemyBusinessRepository:
 
     async def get_run(self, run_id: str, tenant_id: str) -> ExtractionRunRecord | None:
         return await asyncio.to_thread(self._get_run_sync, run_id, tenant_id)
+
+    async def list_recent_runs(self, tenant_id: str, actor_id: str, limit: int) -> list[ExtractionRunRecord]:
+        return await asyncio.to_thread(self._list_recent_runs_sync, tenant_id, actor_id, limit)
+
+    def _list_recent_runs_sync(self, tenant_id: str, actor_id: str, limit: int) -> list[ExtractionRunRecord]:
+        with self._sessions() as session:
+            batch_runs = select(InvoiceBatchItemRow.run_id).where(InvoiceBatchItemRow.run_id.is_not(None))
+            rows = session.scalars(select(ExtractionRunRow).where(
+                ExtractionRunRow.tenant_id == tenant_id,
+                ExtractionRunRow.created_by == actor_id,
+                ExtractionRunRow.run_id.not_in(batch_runs),
+            ).order_by(ExtractionRunRow.created_at.desc(), ExtractionRunRow.run_id.desc()).limit(limit)).all()
+            return [ExtractionRunRecord(
+                identity=WorkflowIdentity(thread_id=row.thread_id, run_id=row.run_id,
+                                          document_id=row.document_id),
+                status=WorkflowStatus(row.status),
+                validation_route=ValidationRoute(row.validation_route) if row.validation_route else None,
+                failure_message=None,
+                created_at=self._aware(row.created_at), updated_at=self._aware(row.updated_at),
+            ) for row in rows]
 
     async def upsert_result(
         self,

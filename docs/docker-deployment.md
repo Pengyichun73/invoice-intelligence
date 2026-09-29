@@ -1,35 +1,44 @@
 # Docker Compose 部署
 
-## 隔离 OIDC 双人验收
+## 统一本地开发环境
 
-日常启动隔离后端、Keycloak、PostgreSQL、Milvus、相关 Worker 和 OCR：
+本地只使用 Compose 项目 `invoice-intelligence`。原 `invoice-acceptance` 的业务库、
+Checkpoint、Keycloak、原件和派生索引数据已迁入该项目；保留 `invoice-acceptance`
+作为 Keycloak realm 名以维持现有用户与 issuer，不再作为 Docker 项目名。
+旧项目容器与原卷已删除；迁移前源/目标归档和 SHA-256 清单保留在 Git 忽略的
+`artifacts/acceptance-to-main-20260928/`，内含敏感数据，应按备份策略保护。
+启动 OCR、后端、Keycloak、PostgreSQL、Milvus 和相关 Worker：
 
 ```powershell
 cd G:\work\ai
-.\scripts\manage-acceptance.ps1 -Action start
-.\scripts\manage-acceptance.ps1 -Action status
-.\scripts\manage-acceptance.ps1 -Action stop
+.\scripts\manage-intelligence.ps1 -Action start
+.\scripts\manage-intelligence.ps1 -Action status
+.\scripts\manage-intelligence.ps1 -Action stop
 ```
 
-`Auto` 模式检测到宿主机 PaddleX `8077` 的 `/ocr` 契约时复用该服务；否则使用
-`compose.ocr-gpu.yml` 启动 Docker GPU OCR。明确使用 Docker：
+一条命令启动 OCR、Docker 后端和前端：
 
 ```powershell
-.\scripts\manage-acceptance.ps1 -Action start -OcrMode Docker
+.\scripts\manage-intelligence.ps1 -Action start -IncludeFrontend
 ```
 
-在显式 Docker 模式下，若宿主 OCR 已运行，脚本拒绝同时占用 GPU；请先自行停止宿主 OCR。
-容器 OCR 内部端口 8077，不发布到主机；Worker 使用 `http://ocr:8077`。
-首次构建 OCR 镜像和下载模型可能较慢；服务成功启动后由 `restart: unless-stopped`
-随 Docker Desktop 恢复，无需保留 PowerShell 终端。已有 API 镜像按需显式加 `-Build`
-重建。脚本不会关闭宿主 OCR，也不会删除数据库卷。前端验收页仍独立通过 15173 启动。
+脚本优先复用已有的宿主机 PaddleX `127.0.0.1:8077`；否则使用项目 `.venv-ocr`
+和 `gpu:0` 在隐藏进程中启动，并等待 `/ocr` 就绪，失败则不启动 Docker Worker。
+提取 Worker 使用 `http://host.docker.internal:8077`。已有 API 镜像按需加 `-Build` 重建。
+如果默认项目内仍有 Docker OCR 容器运行，脚本会拒绝同时使用宿主 OCR。
+脚本的 `stop` 只关闭由脚本记录并核对身份的本机 OCR/前端进程，不关闭手动启动的进程，
+也不会删除数据库卷。后台日志位于 `.data/logs/`，PID 记录位于 `.data/run/`。
+不使用 `-IncludeFrontend` 时，前端仍可单独通过 15173 启动。
+应用镜像构建时 pip 下载超时后会有限重试，重新构建可复用 BuildKit 的 pip 下载缓存；
+若仍出现 `files.pythonhosted.org` 读取超时，应检查 Docker Desktop 的网络或代理连接。
 
-`compose.acceptance.yml` 使用独立 Compose 项目和数据卷，不修改默认项目。
+`compose.local-oidc.yml` 只覆盖默认项目的本地 OIDC、OCR 和端口配置。
 本地 HTTP Keycloak 仅绑定 `127.0.0.1:18080`，仅用于隔离验收，不是生产认证部署。
 登录前，确保 `secrets/*.txt` 中现有密码文件都是普通文件，并在当前项目根目录运行：
 
 ```powershell
-docker compose -p invoice-acceptance --env-file .env.compose -f docker-compose.yml -f compose.acceptance.yml --profile core --profile auth up -d --build postgres-auth keycloak postgres postgres-checkpoint migration api extraction-worker memory-admission
+docker compose -p invoice-intelligence --env-file .env.compose -f docker-compose.yml -f compose.local-oidc.yml --profile core --profile auth --profile vector config --quiet
+.\scripts\manage-intelligence.ps1 -Action start -Build
 .\scripts\provision-acceptance-users.ps1
 .\.venv\Scripts\python.exe scripts\verify-acceptance-auth.py
 if (-not (Test-Path frontend/.env.acceptance)) { Copy-Item frontend/.env.acceptance.example frontend/.env.acceptance }
@@ -38,7 +47,8 @@ npm install
 npm run dev -- --mode acceptance --host 127.0.0.1 --port 15173 --strictPort
 ```
 
-访问 `http://127.0.0.1:15173`。两个本地验收账号分别为 `reviewer-a`
+访问 `http://127.0.0.1:15173`；本地 API 为 `http://127.0.0.1:8000`。
+两个本地账号分别为 `reviewer-a`
 （`invoice-reviewer`）和 `governor-b`（`memory-governor`），随机密码只保存在
 `secrets/acceptance-users.txt`，不得提交或发送。A 同时具有 `invoice-extractor`
 权限用于上传提取。验收账号使用隔离环境的占位资料，以避免 Keycloak 首次登录要求补全资料。Keycloak 中调整角色后需重新登录；
@@ -54,9 +64,11 @@ realm，在 Users 中选择账号并通过 Role mapping 分配或移除 `invoice
 此处仅验证身份、权限与页面入口。`reviewer-a` 的总览会因缺少记忆读取权限显示部分数据未读取；应从“发票提取”进入其工作区，不将此提示视为后端故障。实际发票提取、审核、准入、Milvus 投影和第二张召回
 仍应按下文独立逐项验收，不能由账号登录成功推定业务闭环通过。
 
-> 当前状态：隔离 Compose 已启动并迁移至 `0045`，API、提取 Worker 与 Keycloak 健康；
-> 两个账号的 OIDC PKCE、JWT 校验和 API 角色隔离已通过，浏览器可进入各自工作页面。
-> 长时提取、审核、准入、投影及第二张发票召回仍未端到端验收，更不代表生产就绪。
+> 2026-09-28 数据迁移后，目标业务库为 `0045`，文档/Run/准入/审核案例计数
+> 分别为 8/8/10/10；Keycloak 用户 3、Checkpoint 51。目标 API 健康，两账号的
+> OIDC PKCE 与权限通过，案例索引 PostgreSQL-Milvus 投影清单比对通过（5 条）。
+> OCR 8077 当时未启动，提取 Worker 和第二张发票的实际识别收益未在目标项目重验。
+> 这些本地结果不代表生产就绪。
 > `evaluation-worker`、`scheduler` 已接入业务 PostgreSQL 的评估 Job queue；`training-worker` 负责训练任务
 > 的提交、刷新和取消；model promotion worker 明确禁用。完整阻塞清单见
 > [`project-status.md`](project-status.md)。

@@ -32,7 +32,7 @@ function publishRequestActivity(delta) {
   }
 }
 
-const INVOICE_FIELDS = Object.freeze({
+export const INVOICE_FIELDS = Object.freeze({
   invoice_unique_code: '发票唯一编号', company_name: '公司名称', invoice_collection_type_desc: '采集方式',
   invoice_number: '发票号', po_number: 'PO号', bookkeeping_datetime: '入账日期', buyer_name: '购方名称',
   attribute_1: '供应商编号', seller_name: '销货方名称', invoice_total_amount: '金额',
@@ -72,6 +72,9 @@ const DISPLAY_LABELS = {
     pending: '待准入', approved: '已批准', quarantined: '已隔离', rejected: '已拒绝',
     suspended: '已暂停', invalidated: '已失效', processing: '处理中', completed: '已完成',
     failed: '失败', indexed: '已登记索引', open: '待处理', resolved: '已解决', dismissed: '已忽略',
+    segmenting: '识别票据边界', needs_boundary_review: '待确认边界', too_many_invoices: '超过五张',
+    extracting: '正在登记提取', dispatched: '已登记提取', queued: '排队中', proposed: '边界已识别',
+    needs_review: '待确认边界', received: '已接收', pending_review: '待人工审核',
   },
   operation: {
     approve_admission: '批准记忆准入', reject_admission: '拒绝记忆准入', quarantine_admission: '隔离记忆准入',
@@ -255,15 +258,25 @@ export function get(path, params, options = {}) {
   return apiRequest(`${path}${queryString(params)}`, options)
 }
 
+export async function getBlob(path, signal) {
+  const token = await accessToken()
+  const response = await fetch(path, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    signal,
+  })
+  if (!response.ok) throw new ApiError(response.status, `http_${response.status}`, STATUS_MESSAGES[response.status] || '图片读取失败', null, {})
+  return response.blob()
+}
+
 export async function write(
   path,
-  { method = 'POST', body, headers = {}, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, signal } = {},
+  { method = 'POST', body, headers = {}, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, signal, idempotencyKey } = {},
 ) {
   const fingerprint = await writeFingerprint(path, method, body)
-  const idempotencyKey = cachedWriteKey(fingerprint)
+  const requestKey = idempotencyKey || cachedWriteKey(fingerprint)
   const requestHeaders = {
     ...headers,
-    'Idempotency-Key': idempotencyKey,
+    'Idempotency-Key': requestKey,
   }
   const options = { method, headers: requestHeaders }
   if (body instanceof FormData) options.body = body

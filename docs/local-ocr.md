@@ -4,18 +4,17 @@
 
 本地 OCR 与 Invoice Intelligence 主 Python 环境隔离，使用项目根目录下的
 `.venv-ocr`。旧本地调试脚本使用 `http://127.0.0.1:8188`，设备为 `gpu:0`；
-当前隔离验收使用宿主或容器内的 `8077`。若复用 Windows 上的
+当前隔离验收只使用宿主机的 `8077`。使用 Windows 上的
 PaddleX `8077`，须先确认宿主机端口正在监听，再从提取 Worker 容器确认可达；容器内的
 `127.0.0.1` 指向容器自身。只有在回环监听无法从 Docker Desktop 访问时，才将服务绑定到
 Docker 可达地址并用 Windows 防火墙限制来源，不向局域网开放 OCR 服务。
 
-免持有终端的隔离验收入口是 `scripts/manage-acceptance.ps1`。已运行的宿主 OCR 8077
-可由 `Auto` 模式复用；宿主 OCR 不在运行时，脚本选用 Docker GPU OCR（容器内 8077，
-`gpu:0`，相同 YAML）。显式 `-OcrMode Docker` 在宿主 OCR 运行时拒绝双开。
-Docker OCR 不向主机发布端口，Worker 直接访问 `http://ocr:8077`；首次 Docker 镜像与
-模型下载尚需现场验收，不能仅凭 GPU 透传推断模型兼容。
+统一开发入口是 `scripts/manage-intelligence.ps1 -Action start`：脚本复用已有的宿主 OCR，
+否则从 `.venv-ocr` 后台启动 8077 并等待 `/ocr` 契约就绪。提取 Worker 通过
+`http://host.docker.internal:8077` 访问宿主 OCR；脚本不会构建或启动 Docker OCR。
+需要单独观察 PaddleX 输出时仍可用下列手动命令；脚本的 `stop` 不结束手动进程。
 
-PowerShell 启动命令：
+隔离验收使用的 PowerShell 启动命令：
 
 ```powershell
 cd G:\work\ai
@@ -25,11 +24,11 @@ $env:PADDLE_PDX_CACHE_HOME = (Join-Path $PWD '.data\paddlex-cache')
 paddlex --serve `
   --pipeline .\conf\ocr\ppocrv6_small_v1.yaml `
   --host 127.0.0.1 `
-  --port 8188 `
+  --port 8077 `
   --device gpu:0
 ```
 
-该终端必须保持运行。端口 `8188` 仅绑定回环地址，不向局域网或公网暴露。
+该终端必须保持运行。端口 `8077` 仅绑定回环地址，不向局域网或公网暴露。
 
 若启动日志出现 `WinError 10013`，先检查 Windows/Docker/Hyper-V 的排除端口范围：
 

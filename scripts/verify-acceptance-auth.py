@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 AUTHORITY = "http://127.0.0.1:18080/realms/invoice-acceptance"
 CLIENT_ID = "invoice-intelligence-console"
 REDIRECT_URI = "http://127.0.0.1:15173/"
-API = "http://127.0.0.1:18000"
+API = "http://127.0.0.1:8000"
 
 
 class LoginForm(HTMLParser):
